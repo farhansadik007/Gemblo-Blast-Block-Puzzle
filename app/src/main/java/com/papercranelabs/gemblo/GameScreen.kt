@@ -3,6 +3,7 @@ package com.papercranelabs.gemblo
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -74,6 +75,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextMotion
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -123,7 +125,7 @@ val Fredoka = FontFamily(
 )
 
 fun label(size: Int, color: Color = Pal.text, weight: FontWeight = FontWeight.SemiBold) =
-    TextStyle(fontFamily = Fredoka, fontWeight = weight, fontSize = size.sp, color = color)
+    TextStyle(textMotion = TextMotion.Animated, fontFamily = Fredoka, fontWeight = weight, fontSize = size.sp, color = color)
 
 private fun fmt(n: Int) = "%,d".format(n)
 
@@ -146,20 +148,34 @@ fun GameScreen(ui: GameUi, ads: AdManager) {
         ) {
             TopBar(ui)
             Spacer(Modifier.height(10.dp))
-            BasicText(
-                fmt(ui.displayScore.roundToInt()),
-                modifier = Modifier
-                    .onGloballyPositioned { ui.scoreTarget = it.boundsInRoot().center }
-                    .graphicsLayer {
-                        val t = ((ui.now - ui.scoreBumpAt) / 260f).coerceIn(0f, 1f)
-                        val s = 1f + 0.2f * (1f - t) * (1f - t)
-                        scaleX = s; scaleY = s
-                    },
-                style = TextStyle(
-                    fontFamily = Fredoka, fontWeight = FontWeight.Bold, fontSize = 54.sp, color = Pal.text,
-                    shadow = Shadow(Pal.scoreShadow, Offset(0f, 7f), 0f),
-                ),
+            // combo "fever": 0 = calm, 1 = full dance (fades in/out smoothly)
+            val fever by animateFloatAsState(
+                if (ui.combo >= 2) (0.55f + 0.15f * (ui.combo - 2)).coerceAtMost(1f) else 0f,
+                tween(450), label = "fever",
             )
+            // fixed-size stage: the aura's center never moves when the score gains digits
+            Box(Modifier.fillMaxWidth().height(72.dp), contentAlignment = Alignment.Center) {
+                if (fever > 0.01f) ComboAura(ui, fever, Modifier.matchParentSize())
+                FixedDigits(
+                    fmt(ui.displayScore.roundToInt()),
+                    modifier = Modifier
+                        .onGloballyPositioned { ui.scoreTarget = it.boundsInRoot().center }
+                        .graphicsLayer {
+                            val t = ((ui.now - ui.scoreBumpAt) / 260f).coerceIn(0f, 1f)
+                            // gentle dance while a combo is alive: every motion is a smooth wave (no cusps)
+                            val beat = ui.now / 1000f * 2 * PI.toFloat() * 1.1f
+                            val wave = 0.5f - 0.5f * cos(beat * 2)              // 0..1, smooth at both ends
+                            val s = 1f + 0.2f * (1f - t) * (1f - t) + 0.035f * fever * wave
+                            scaleX = s; scaleY = s
+                            rotationZ = 3f * fever * sin(beat)
+                            translationY = -4.dp.toPx() * fever * wave
+                        },
+                    style = TextStyle(textMotion = TextMotion.Animated, fontFeatureSettings = "tnum",
+                        fontFamily = Fredoka, fontWeight = FontWeight.Bold, fontSize = 54.sp, color = Pal.text,
+                        shadow = Shadow(Pal.scoreShadow, Offset(0f, 7f), 0f),
+                    ),
+                )
+            }
             ComboLine(ui)
             // less space above the board than below: the grid sits at the screen's center, nudged up
             Spacer(Modifier.weight(0.2f))
@@ -204,6 +220,72 @@ fun GameScreen(ui: GameUi, ads: AdManager) {
     }
 }
 
+/**
+ * A counting number that never wobbles sideways: every digit sits in a slot as wide as the widest digit,
+ * so the text width only changes when a digit or comma is added (works with any font).
+ */
+@Composable
+private fun FixedDigits(text: String, modifier: Modifier, style: TextStyle) {
+    val tm = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val digitW = remember(style) {
+        with(density) { "0123456789".maxOf { tm.measure(it.toString(), style).size.width }.toDp() }
+    }
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        text.forEach { ch ->
+            if (ch.isDigit()) {
+                Box(Modifier.width(digitW), contentAlignment = Alignment.Center) { BasicText(ch.toString(), style = style) }
+            } else {
+                BasicText(ch.toString(), style = style)
+            }
+        }
+    }
+}
+
+private val rayPath = Path()
+
+/**
+ * Behind the score while a combo is alive: a slowly spinning golden sunburst with additive glow,
+ * a pulsing halo, and glints orbiting the number. Grows with the combo ([k] 0..1).
+ */
+@Composable
+private fun ComboAura(ui: GameUi, k: Float, modifier: Modifier) {
+    Canvas(modifier) {
+        val now = ui.now
+        val c = center
+        val gold = Color(0xFFFFC93C)
+        val hot = Color(0xFFFF7A3D)
+        val beat = now / 1000f * 2 * PI.toFloat() * 1.1f
+        val pulse = 0.94f + 0.06f * (0.5f - 0.5f * cos(beat * 2))   // same smooth wave as the score
+        val rOuter = 95.dp.toPx() * (0.85f + 0.25f * k) * pulse
+        // halo
+        drawCircle(Brush.radialGradient(listOf(gold, hot.copy(alpha = 0.5f), Color.Transparent), c, rOuter * 0.75f),
+            rOuter * 0.75f, c, alpha = 0.45f * k, blendMode = BlendMode.Plus)
+        // spinning rays
+        val rays = 14
+        val spin = now / 1000f * 22f
+        rotate(spin, c) {
+            for (i in 0 until rays) {
+                val a0 = (i * 360f / rays) * PI.toFloat() / 180f
+                val half = (360f / rays) * 0.22f * PI.toFloat() / 180f
+                rayPath.reset()
+                rayPath.moveTo(c.x, c.y)
+                rayPath.lineTo(c.x + cos(a0 - half) * rOuter, c.y + sin(a0 - half) * rOuter)
+                rayPath.lineTo(c.x + cos(a0 + half) * rOuter, c.y + sin(a0 + half) * rOuter)
+                rayPath.close()
+                drawPath(rayPath, Brush.radialGradient(listOf(gold, Color.Transparent), c, rOuter), alpha = 0.32f * k, blendMode = BlendMode.Plus)
+            }
+        }
+        // orbiting glints
+        val orbit = 70.dp.toPx() * (0.9f + 0.15f * k)
+        for (i in 0 until 3) {
+            val a = now / 1000f * 1.3f + i * 2.094f
+            val tw = 0.75f + 0.25f * sin(now / 1000f * 3f + i * 2f)
+            sparkle(c.x + cos(a) * orbit, c.y + sin(a) * orbit * 0.45f, 9.dp.toPx() * tw, k * tw, gold, rot = a * 30f)
+        }
+    }
+}
+
 /** Full-screen top layer: screen-edge flash and coins flying to the counter. Touches pass through. */
 @Composable
 private fun FxLayer(ui: GameUi, tm: TextMeasurer) {
@@ -230,7 +312,7 @@ private fun FxLayer(ui: GameUi, tm: TextMeasurer) {
             }
             val size = if (f.hold) 72f else 44f
             // exactly the score counter's style (same font, white, soft drop shadow), no fat outline
-            val fill = TextStyle(
+            val fill = TextStyle(textMotion = TextMotion.Animated,
                 fontFamily = Fredoka, fontWeight = FontWeight.Bold, fontSize = size.sp, color = Pal.text,
                 shadow = Shadow(Pal.scoreShadow, Offset(0f, 7f), 0f),
             )
@@ -631,14 +713,14 @@ private fun DrawScope.drawGameInner(ui: GameUi, m: Metrics, tm: TextMeasurer) {
         if (r0 != null && r0.slot == i) {
             val k = easeOut(((now - r0.t0) / 180f).coerceIn(0f, 1f))
             val tl = Offset(r0.from.x + (home.x - r0.from.x) * k, r0.from.y + (home.y - r0.from.y) * k)
-            piece(p, tl, m.cell + (m.trayCell - m.cell) * k, m.step + (m.trayStep - m.step) * k, col)
+            piece(p, tl, m.cell + (m.tCell(p) - m.cell) * k, m.step + (m.tStep(p) - m.step) * k, col)
         } else {
             // minimal hover: a soft shadow below, the piece floating gently above it
             val a = tt.coerceAtLeast(0.01f)
             val bob = sin(now / 520f + i * 2.1f) * 1.5f * m.dp
             val tl = Offset(home.x + slide, home.y - 3 * m.dp + bob)
-            hoverShadow(p, Offset(home.x + slide, home.y), m.trayCell, m.trayStep, m.dp, a * (1f - bob / (6 * m.dp)))
-            piece(p, tl, m.trayCell, m.trayStep, col, alpha = a)
+            hoverShadow(p, Offset(home.x + slide, home.y), m.tCell(p), m.tStep(p), m.dp, a * (1f - bob / (6 * m.dp)))
+            piece(p, tl, m.tCell(p), m.tStep(p), col, alpha = a)
         }
     }
 
@@ -651,7 +733,7 @@ private fun DrawScope.drawGameInner(ui: GameUi, m: Metrics, tm: TextMeasurer) {
             val e = ui.eff(d)
             val to = m.dragTopLeft(p, e.x, e.y)
             val tl = Offset(from.x + (to.x - from.x) * k, from.y + (to.y - from.y) * k)
-            piece(p, tl, m.trayCell + (m.cell - m.trayCell) * k, m.trayStep + (m.step - m.trayStep) * k, Pal.block(p.color))
+            piece(p, tl, m.tCell(p) + (m.cell - m.tCell(p)) * k, m.tStep(p) + (m.step - m.tStep(p)) * k, Pal.block(p.color))
         }
     }
 
@@ -661,12 +743,12 @@ private fun DrawScope.drawGameInner(ui: GameUi, m: Metrics, tm: TextMeasurer) {
         if (t < 0f || t > 1f) return@forEach
         val fill = if (f.rainbow) {
             val sh = (now % 1200) / 1200f * 400f
-            TextStyle(
+            TextStyle(textMotion = TextMotion.Animated,
                 fontFamily = Fredoka, fontWeight = FontWeight.Bold, fontSize = f.size.sp,
                 brush = Brush.linearGradient(Pal.confetti, start = Offset(sh, 0f), end = Offset(sh + 400f, 80f), tileMode = TileMode.Mirror),
             )
-        } else TextStyle(fontFamily = Fredoka, fontWeight = FontWeight.Bold, fontSize = f.size.sp, color = f.color)
-        val outline = TextStyle(
+        } else TextStyle(textMotion = TextMotion.Animated, fontFamily = Fredoka, fontWeight = FontWeight.Bold, fontSize = f.size.sp, color = f.color)
+        val outline = TextStyle(textMotion = TextMotion.Animated,
             fontFamily = Fredoka, fontWeight = FontWeight.Bold, fontSize = f.size.sp, color = Pal.scoreShadow,
             drawStyle = Stroke(width = 7 * m.dp, join = StrokeJoin.Round),
         )
@@ -687,7 +769,7 @@ private fun DrawScope.drawGameInner(ui: GameUi, m: Metrics, tm: TextMeasurer) {
 
 // ---------------------------------------------------------------- chrome
 
-private val styleBest get() = TextStyle(
+private val styleBest get() = TextStyle(textMotion = TextMotion.Animated,
     fontFamily = Fredoka, fontWeight = FontWeight.Bold, fontSize = 24.sp, color = Pal.text,
     shadow = Shadow(Pal.scoreShadow, Offset(0f, 4f), 0f),
 )
@@ -979,7 +1061,7 @@ private fun HomeScreen(ui: GameUi) {
         Spacer(Modifier.weight(0.8f))
         BasicText(
             "Gemblo",
-            style = TextStyle(
+            style = TextStyle(textMotion = TextMotion.Animated,
                 fontFamily = Fredoka, fontWeight = FontWeight.Bold, fontSize = 64.sp, color = Pal.text,
                 shadow = Shadow(Pal.scoreShadow, Offset(0f, 8f), 0f),
             ),
@@ -989,7 +1071,18 @@ private fun HomeScreen(ui: GameUi) {
         Spacer(Modifier.height(36.dp))
         Mascot(ui, happy = true, color = Pal.block(2), sizeDp = 130.dp)
         Spacer(Modifier.weight(1f))
-        BigButton("Play", Color(0xFF3FBF6E), Icons.play, Modifier.width(260.dp)) { ui.play() }
+        if (ui.canContinue) {
+            // pick up exactly where the player left off
+            BigButton("Continue", Color(0xFF3FBF6E), Icons.play, Modifier.width(260.dp), chip = fmt(ui.game.score)) { ui.play() }
+            Spacer(Modifier.height(14.dp))
+            BasicText(
+                "New game",
+                modifier = Modifier.clip(RoundedCornerShape(14.dp)).juicy { ui.replay() }.padding(horizontal = 18.dp, vertical = 10.dp),
+                style = label(20, Pal.text, FontWeight.Bold).copy(shadow = Shadow(Pal.scoreShadow, Offset(0f, 3f), 0f)),
+            )
+        } else {
+            BigButton("Play", Color(0xFF3FBF6E), Icons.play, Modifier.width(260.dp)) { ui.play() }
+        }
         Spacer(Modifier.weight(0.7f))
     }
 }

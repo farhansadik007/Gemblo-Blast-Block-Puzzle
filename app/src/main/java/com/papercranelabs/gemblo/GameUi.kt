@@ -40,6 +40,10 @@ class Prefs(ctx: Context) {
     var theme: Int
         get() = sp.getInt("theme", 0)
         set(v) { sp.edit().putInt("theme", v).apply() }
+    /** The game in progress (see Game.save), or null when there's nothing to continue. */
+    var savedGame: String?
+        get() = sp.getString("saved_game", null)
+        set(v) { sp.edit().putString("saved_game", v).apply() }
 }
 
 enum class Screen { Home, Game }
@@ -73,8 +77,20 @@ class Metrics(val w: Float, val h: Float, val dp: Float) {
     val gridSize = N * cell + (N + 1) * gap
     val trayTop = w + 16 * dp
     val trayH = h - trayTop
-    val trayCell = floor(cell * 0.64f)
-    val trayStep = trayCell + gap * 0.6f
+    /** Preferred tray block size; long pieces shrink below this so they never overlap their neighbours. */
+    private val trayCellMax = floor(cell * 0.64f)
+    private val trayGap = gap * 0.6f
+
+    /** Tray block size for this piece: as big as possible while the piece fits inside its own third of the tray. */
+    fun tCell(p: Piece): Float {
+        val slotW = w / 3f - 10 * dp
+        val slotH = trayH - 14 * dp
+        val byW = (slotW - (p.w - 1) * trayGap) / p.w
+        val byH = (slotH - (p.h - 1) * trayGap) / p.h
+        return floor(minOf(trayCellMax, byW, byH))
+    }
+
+    fun tStep(p: Piece) = tCell(p) + trayGap
 
     fun cellX(c: Int) = pad + c * step
     fun cellY(r: Int) = pad + r * step
@@ -86,7 +102,7 @@ class Metrics(val w: Float, val h: Float, val dp: Float) {
 
     fun trayTopLeft(p: Piece, i: Int): Offset {
         val ctr = slotCenter(i)
-        return Offset(ctr.x - (p.w * trayStep - gap * 0.6f) / 2, ctr.y - (p.h * trayStep - gap * 0.6f) / 2)
+        return Offset(ctr.x - (p.w * tStep(p) - trayGap) / 2, ctr.y - (p.h * tStep(p) - trayGap) / 2)
     }
 
     /** The dragged piece floats above the finger so the finger never hides it. */
@@ -138,10 +154,30 @@ class GameUi(var game: Game, private val prefs: Prefs, private val sound: SoundF
     var hx: Haptics? = null
         set(v) { field = v; v?.enabled = vibrate }
 
+    /** Home shows "Continue" when this is true. */
+    var canContinue by mutableStateOf(false)
+        private set
+
     init {
         sound?.muted = muted
         // a fresh color theme every time the app is opened
         newTheme()
+        // continue where the player left off (even after Android closed the app)
+        if (game.load(prefs.savedGame) && game.inProgress()) {
+            displayScore = game.score.toFloat()
+            combo = game.combo
+            movesLeft = 3 - game.movesSinceClear
+        } else {
+            game.reset()
+            prefs.savedGame = null
+        }
+        canContinue = game.inProgress()
+    }
+
+    /** Saves the game in progress (or clears the save once it's over). Called after every change and on pause. */
+    fun save() {
+        canContinue = game.inProgress()
+        prefs.savedGame = if (canContinue) game.save() else null
     }
 
     val gameOverVisible get() = stuckAt >= 0 && now - stuckAt > 900
@@ -191,11 +227,11 @@ class GameUi(var game: Game, private val prefs: Prefs, private val sound: SoundF
     }
 
     // ---------------- screens
-    /** Home -> game: resume a game in progress, otherwise start a new one. Fresh colors each time. */
+    /** Home -> game: continue the game in progress, otherwise start a new one. Fresh colors each time. */
     fun play() {
         sfx(Sfx.TAP)
         newTheme()
-        if (stuckAt >= 0 || game.score == 0 && game.grid.all { it == 0 }) resetGame(changeTheme = false)
+        if (!game.inProgress()) resetGame(changeTheme = false)
         screen = Screen.Game
     }
 
@@ -291,6 +327,7 @@ class GameUi(var game: Game, private val prefs: Prefs, private val sound: SoundF
         if (game.isStuck()) {
             if (stuckAt < 0) { stuckAt = now; losePlayed = false }
         } else stuckAt = -1
+        save()
     }
 
     fun startDrag(slot: Int, x: Float, y: Float) {

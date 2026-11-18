@@ -42,7 +42,7 @@ The rules that make Gemblo Blast look and feel the way it does. Check new work a
 | Hover | Faint ghost on the target. Lines that would clear glow **neon in the piece's color**, with a sweeping shine and colored sparkles. |
 | Place | Pop-in squash, plastic **snap** sound (±5% pitch wobble), click haptic, small "+N" flying from the grid center to the score. |
 | Clear | Each block lifts (3D pop + drop shadow) with a **neon halo in its own color** and sparkles **around** it (never a white wash inside), then bursts into spinning shards and confetti. Plus a line beam, a shockwave ring, a screen shake that scales with size, and a big "+N" that pops at the **grid center**, holds, then flies into the score. |
-| Combo | Clear sound rises a semitone per combo step. "Combo ×N" with 3 pips (moves left before it breaks). |
+| Combo | Clear sound rises a semitone per combo step. "Combo ×N" with 3 pips (moves left before it breaks). **The score dances** (sway, hop, pulse on a beat) over a spinning golden sunburst with orbiting glints, growing with the combo and fading out when it breaks. |
 | Big clear / Color Flush / All Clear | Screen-edge flash in the clear's color, rainbow text, rising rumble haptic, fanfare. |
 | Bad drop | Piece flies back to the tray, soft thud. |
 | Game over | Board greys out row by row, then the popup. |
@@ -61,6 +61,7 @@ The rules that make Gemblo Blast look and feel the way it does. Check new work a
 ## 7. Feel and input
 
 - **One-handed drag.** The piece moves 1.4× sideways and 1.6× upward relative to the finger, and **snaps to the nearest open spot within one cell**.
+- **Continue.** The game saves after every move and when you leave the app, so it survives Android closing the app. Home shows **Continue** (with the score) plus **New game**. A finished game is never offered.
 - **Fair deals.** Each set of 3 pieces can always be placed in some order when possible.
 - **Haptics** drive the vibration motor directly (tick, click, heavy, rumble, boom, lose pattern), so they work even when system touch feedback is off.
 

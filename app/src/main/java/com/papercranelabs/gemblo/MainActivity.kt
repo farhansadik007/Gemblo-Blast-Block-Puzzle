@@ -15,6 +15,7 @@ import com.papercranelabs.gemblo.game.Game
 
 class MainActivity : ComponentActivity() {
     private var sound: SoundFx? = null
+    private var gameUi: GameUi? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -27,7 +28,7 @@ class MainActivity : ComponentActivity() {
         val sfx = SoundFx(this).also { sound = it; it.setMusic(prefs.music) }
         val ads = AdManager(this).also { it.start(this) }
         setContent {
-            val ui = remember { GameUi(Game(), prefs, sfx).also { it.hx = Haptics(this) } }
+            val ui = remember { GameUi(Game(), prefs, sfx).also { it.hx = Haptics(this); gameUi = it } }
             GameScreen(ui, ads)
         }
     }
@@ -48,6 +49,7 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         sound?.pauseMusic()
+        gameUi?.save()   // leaving the app: keep the game so it can be continued
     }
 
     override fun onResume() {

@@ -238,6 +238,45 @@ class Game(seed: Long = System.nanoTime()) {
 
     fun rotate(slot: Int) { tray[slot] = tray[slot]?.rotated() }
 
+    /** True when there is a game worth continuing (something placed, and not stuck). */
+    fun inProgress(): Boolean = (score > 0 || grid.any { it != 0 }) && !isStuck()
+
+    /**
+     * Compact save string: score;combo;movesSinceClear;usedBlast;usedNewPieces;64 grid digits;3 tray pieces.
+     * A piece is "color:r.c r.c ..." and an empty slot is "-".
+     */
+    fun save(): String {
+        val pieces = tray.joinToString("|") { p ->
+            if (p == null) "-" else p.color.toString() + ":" + p.cells.joinToString(" ") { "${it.r}.${it.c}" }
+        }
+        return listOf(score, combo, movesSinceClear, if (usedBlast) 1 else 0, if (usedNewPieces) 1 else 0,
+            grid.joinToString(""), pieces).joinToString(";")
+    }
+
+    /** Restores a [save] string. Returns false (and changes nothing) if it is missing or malformed. */
+    fun load(s: String?): Boolean {
+        if (s.isNullOrBlank()) return false
+        return try {
+            val f = s.split(";")
+            if (f.size != 7 || f[5].length != N * N) return false
+            val g = IntArray(N * N) { f[5][it].digitToInt().also { k -> require(k in 0..COLORS) } }
+            val t = f[6].split("|").also { require(it.size == 3) }.map { ps ->
+                if (ps == "-") null else {
+                    val (col, cells) = ps.split(":")
+                    Piece(normalize(cells.split(" ").map { rc -> rc.split(".").let { Cell(it[0].toInt(), it[1].toInt()) } }), col.toInt())
+                }
+            }
+            score = f[0].toInt(); combo = f[1].toInt(); movesSinceClear = f[2].toInt()
+            usedBlast = f[3] == "1"; usedNewPieces = f[4] == "1"
+            g.copyInto(grid)
+            t.forEachIndexed { i, p -> tray[i] = p }
+            if (tray.all { it == null }) newTray() else trayVersion++
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     fun reset() {
         grid.fill(0)
         score = 0; combo = 0; movesSinceClear = 0

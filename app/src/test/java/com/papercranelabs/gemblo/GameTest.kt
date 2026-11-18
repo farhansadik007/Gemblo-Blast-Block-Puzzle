@@ -55,6 +55,27 @@ class GameTest {
         assertTrue(g.canPlace(bar(2, 1), 0, 1))
     }
 
+    @Test fun saveAndLoadRestoresTheGame() {
+        val a = Game(5)
+        a.grid[10] = 3; a.grid[63] = 5
+        a.tray[0] = Piece(listOf(Cell(0, 0), Cell(1, 0), Cell(1, 1)), 2)
+        a.tray[1] = null
+        a.place(0, 4, 4)
+        val b = Game(9)
+        assertTrue(b.load(a.save()))
+        assertEquals(a.score, b.score)
+        assertEquals(a.combo, b.combo)
+        assertTrue(a.grid.contentEquals(b.grid))
+        assertEquals(a.tray.map { it?.cells to it?.color }, b.tray.map { it?.cells to it?.color })
+    }
+
+    @Test fun loadRejectsGarbage() {
+        val g = Game(6)
+        assertFalse(g.load("nonsense"))
+        assertFalse(g.load(null))
+        assertFalse(g.load("1;0;0;0;0;123;-|-|-"))
+    }
+
     @Test fun rotationsKeepCellCount() {
         val l = Piece(listOf(Cell(0, 0), Cell(1, 0), Cell(2, 0), Cell(2, 1)), 1)
         val r = l.rotated()
