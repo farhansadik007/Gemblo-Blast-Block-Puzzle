@@ -28,7 +28,7 @@ class MainActivity : ComponentActivity() {
         val sfx = SoundFx(this).also { sound = it; it.setMusic(prefs.music) }
         val ads = AdManager(this).also { it.start(this) }
         setContent {
-            val ui = remember { GameUi(Game(), prefs, sfx).also { it.hx = Haptics(this); gameUi = it } }
+            val ui = remember { GameUi(Game(), prefs, sfx).also { it.hx = Haptics(this); gameUi = it; it.demoText = BuildConfig.DEBUG && intent.getBooleanExtra("demo_text", false) } }
             GameScreen(ui, ads)
         }
     }

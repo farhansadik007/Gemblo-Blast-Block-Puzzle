@@ -7,6 +7,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.layout.offset
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -54,6 +56,7 @@ import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
@@ -741,28 +744,32 @@ private fun DrawScope.drawGameInner(ui: GameUi, m: Metrics, tm: TextMeasurer) {
     ui.texts.forEach { f ->
         val t = (now - f.t0) / 1200f
         if (t < 0f || t > 1f) return@forEach
-        val fill = if (f.rainbow) {
-            val sh = (now % 1200) / 1200f * 400f
-            TextStyle(textMotion = TextMotion.Animated,
-                fontFamily = Fredoka, fontWeight = FontWeight.Bold, fontSize = f.size.sp,
-                brush = Brush.linearGradient(Pal.confetti, start = Offset(sh, 0f), end = Offset(sh + 400f, 80f), tileMode = TileMode.Mirror),
-            )
-        } else TextStyle(textMotion = TextMotion.Animated, fontFamily = Fredoka, fontWeight = FontWeight.Bold, fontSize = f.size.sp, color = f.color)
-        val outline = TextStyle(textMotion = TextMotion.Animated,
-            fontFamily = Fredoka, fontWeight = FontWeight.Bold, fontSize = f.size.sp, color = Pal.scoreShadow,
-            drawStyle = Stroke(width = 7 * m.dp, join = StrokeJoin.Round),
-        )
-        val lay = tm.measure(f.text, fill)
-        val layO = tm.measure(f.text, outline)
+        // one layout; the black outline and the colored fill are passed EXPLICITLY at draw time
+        // (the text measurer caches layouts, so colors baked into a measured style can't be trusted)
+        val style = TextStyle(textMotion = TextMotion.Animated, fontFamily = Fredoka, fontWeight = FontWeight.Bold, fontSize = f.size.sp)
+        val lay = tm.measure(f.text, style)
+        val fillBrush: Brush? = when {
+            f.rainbow -> {
+                // gradient coords are relative to the word itself. A mirrored gradient repeats every 2·L,
+                // so sliding exactly 2·L per loop flows forever with no jump.
+                val L = lay.size.width * 0.55f
+                val sh = (now % 1600) / 1600f * 2 * L
+                Brush.linearGradient(Pal.confetti, start = Offset(-sh, 0f), end = Offset(-sh + L, L * 0.15f), tileMode = TileMode.Mirror)
+            }
+            f.text.startsWith("Combo") -> Brush.verticalGradient(listOf(Color(0xFFFFF6C2), Color(0xFFFFC93C), Color(0xFFFF9F1C)))
+            else -> null
+        }
         val rise = 46 * m.dp * easeOut(t)
         val alpha = if (t < 0.72f) 1f else (1 - t) / 0.28f
         val pop = if (t < 0.18f) 0.4f + 0.6f * easeOutBack(t / 0.18f) else 1f
         val half = lay.size.width / 2f
         val cx = if (m.w > 2 * half + 16 * m.dp) f.x.coerceIn(half + 8 * m.dp, m.w - half - 8 * m.dp) else m.w / 2
         val cy = f.y - rise
+        val tl = Offset(cx - half, cy - lay.size.height / 2f)
         scale(pop, pivot = Offset(cx, cy)) {
-            drawText(layO, topLeft = Offset(cx - layO.size.width / 2f, cy - layO.size.height / 2f), alpha = alpha)
-            drawText(lay, topLeft = Offset(cx - half, cy - lay.size.height / 2f), alpha = alpha)
+            drawText(lay, color = Color.Black, topLeft = tl, alpha = alpha, drawStyle = Stroke(width = 7 * m.dp, join = StrokeJoin.Round))
+            if (fillBrush != null) drawText(lay, brush = fillBrush, topLeft = tl, alpha = alpha, drawStyle = Fill)
+            else drawText(lay, color = f.color, topLeft = tl, alpha = alpha, drawStyle = Fill)
         }
     }
 }
@@ -799,7 +806,7 @@ private fun TopBar(ui: GameUi) {
 private fun ComboLine(ui: GameUi) {
     Box(Modifier.height(30.dp), contentAlignment = Alignment.Center) {
         if (ui.combo >= 2) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-            BasicText("Combo ×${ui.combo}", style = label(18, Pal.block(2), FontWeight.Bold).copy(shadow = Shadow(Pal.scoreShadow, Offset(0f, 3f), 0f)))
+            BasicText("Combo ×${ui.combo}", style = label(18, Pal.block(2), FontWeight.Bold).copy(shadow = Shadow(Color.Black, Offset(0f, 3f), 2f)))
             repeat(3) { i ->
                 Box(Modifier.size(9.dp).clip(CircleShape).background(if (i < ui.movesLeft) Pal.block(2) else Pal.pill))
             }
@@ -1050,6 +1057,48 @@ private fun DriftBlocks(ui: GameUi) {
     }
 }
 
+/** The mascot art (design/mascot_source.jpg, cut out): floats, sways gently, with glints twinkling around it. */
+@Composable
+private fun HomeMascot(ui: GameUi) {
+    Box(Modifier.size(210.dp), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.matchParentSize()) {
+            val t = ui.now / 1000f
+            val glints = listOf(Offset(0.12f, 0.22f), Offset(0.9f, 0.18f), Offset(0.92f, 0.72f), Offset(0.08f, 0.7f), Offset(0.5f, 0.02f))
+            glints.forEachIndexed { i, p ->
+                val tw = sin(t * 2.2f + i * 1.7f).coerceAtLeast(0f)
+                sparkle(p.x * size.width, p.y * size.height, 11.dp.toPx() * tw, tw, Color(0xFFFFE07A), rot = t * 40f + i * 30f)
+            }
+            // soft ground shadow that breathes with the float
+            val lift = 0.5f - 0.5f * cos(t * 2.4f)
+            drawOval(Color.Black, Offset(size.width * (0.3f + 0.03f * lift), size.height * 0.85f),
+                Size(size.width * (0.4f - 0.06f * lift), size.height * 0.05f), alpha = 0.18f - 0.05f * lift)
+        }
+        // mascot over its soft white glow (tools/soft_glow.py); both float and sway together,
+        // and the glow swells a little at the top of each float
+        Box(
+            Modifier.size(170.dp).graphicsLayer {
+                val t = ui.now / 1000f
+                val lift = 0.5f - 0.5f * cos(t * 2.4f)
+                translationY = -10.dp.toPx() * lift
+                rotationZ = 3f * sin(t * 1.2f)
+            },
+        ) {
+            Image(
+                painterResource(R.drawable.mascot_glow),
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize().graphicsLayer {
+                    alpha = 0.65f + 0.35f * (0.5f - 0.5f * cos(ui.now / 1000f * 2.4f))
+                },
+            )
+            Image(
+                painterResource(R.drawable.mascot),
+                contentDescription = "Gemblo, the block buddy",
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+    }
+}
+
 @Composable
 private fun HomeScreen(ui: GameUi) {
     DriftBlocks(ui)
@@ -1059,17 +1108,29 @@ private fun HomeScreen(ui: GameUi) {
     ) {
         TopBar(ui)
         Spacer(Modifier.weight(0.8f))
-        BasicText(
-            "Gemblo",
-            style = TextStyle(textMotion = TextMotion.Animated,
-                fontFamily = Fredoka, fontWeight = FontWeight.Bold, fontSize = 64.sp, color = Pal.text,
-                shadow = Shadow(Pal.scoreShadow, Offset(0f, 8f), 0f),
-            ),
-        )
-        Spacer(Modifier.height(6.dp))
-        LogoBlocks(ui)
-        Spacer(Modifier.height(36.dp))
-        Mascot(ui, happy = true, color = Pal.block(2), sizeDp = 130.dp)
+        // the logo art (design/logo_source.jpg, cut out) over a soft white glow (tools/soft_glow.py),
+        // breathing gently; the glow swells with the breath
+        Box(
+            Modifier.fillMaxWidth(0.92f).aspectRatio(1442f / 746f).graphicsLayer {
+                val s = 1f + 0.025f * (0.5f - 0.5f * cos(ui.now / 1000f * 1.8f))
+                scaleX = s; scaleY = s
+            },
+        ) {
+            Image(
+                painterResource(R.drawable.logo_glow),
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize().graphicsLayer {
+                    alpha = 0.7f + 0.3f * (0.5f - 0.5f * cos(ui.now / 1000f * 1.8f))
+                },
+            )
+            Image(
+                painterResource(R.drawable.logo),
+                contentDescription = "Gemblo Blast",
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        Spacer(Modifier.height(16.dp))
+        HomeMascot(ui)
         Spacer(Modifier.weight(1f))
         if (ui.canContinue) {
             // pick up exactly where the player left off

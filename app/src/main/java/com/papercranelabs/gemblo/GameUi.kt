@@ -262,8 +262,21 @@ class GameUi(var game: Game, private val prefs: Prefs, private val sound: SoundF
     }
 
     // ---------------- frame
+    var demoText = false
+    private var lastDemo = 0L
+    private var clockBase = -1L
     fun tick(t: Long) {
-        now = t
+        // debug-only: sample popup words every 1.2 s, to check how they render (adb: --ez demo_text true)
+        if (demoText && screen == Screen.Game && now - lastDemo > 1200) metrics?.let { m ->
+            lastDemo = now
+            texts.add(FxText("Great!", m.w / 2, m.w * 0.45f, Pal.text, 36f, now))
+            texts.add(FxText("Combo ×3", m.w / 2, m.w * 0.62f, Pal.block(1), 36f, now))
+            texts.add(FxText("COLOR FLUSH!", m.w / 2, m.w * 0.8f, Pal.flush, 36f, now, rainbow = true))
+        }
+        // app-relative clock: small numbers keep Float time math precise (device uptime in ms is huge,
+        // and as a Float it only advanced in ~30 ms steps, which made every wave animation stutter)
+        if (clockBase < 0) clockBase = t - 10_000
+        now = t - clockBase
         val sIt = scoreFlights.iterator()
         while (sIt.hasNext()) {
             val f = sIt.next()
