@@ -6,6 +6,12 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.ui.res.painterResource
@@ -140,7 +146,7 @@ fun GameScreen(ui: GameUi, ads: AdManager) {
         while (true) withFrameNanos { ui.tick(it / 1_000_000) }
     }
     val bg by animateColorAsState(Pal.bg, tween(500), label = "bg")
-    Box(Modifier.fillMaxSize().background(bg)) {
+    Box(Modifier.fillMaxSize().background(bg).then(if (ui.screen == Screen.Home) Modifier.grain() else Modifier)) {
       if (ui.screen == Screen.Home) {
         HomeScreen(ui)
       } else {
@@ -856,22 +862,88 @@ private fun ChunkyCard(content: @Composable () -> Unit) {
     }
 }
 
-/** Big candy button with a 3D bottom lip and a squash on press. */
+/**
+ * Premium candy button (studio CTA conventions): soft drop shadow, dark outline, thick 3D lip,
+ * gradient face with a glossy top band and inner rim light, a light sweep every few seconds,
+ * outlined text with a drop shadow. Squashes on press (juicy).
+ */
 @Composable
 private fun BigButton(text: String, color: Color, icon: IconSpec?, modifier: Modifier = Modifier, chip: String? = null, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(20.dp)
-    Box(modifier.fillMaxWidth().height(62.dp).juicy(onClick = onClick)) {
-        Box(Modifier.matchParentSize().padding(top = 6.dp).clip(shape).background(shade(color, 0.72f)))
+    val shine by rememberInfiniteTransition(label = "shine").animateFloat(
+        0f, 1f, infiniteRepeatable(tween(3400, easing = LinearEasing)), label = "shine",
+    )
+    val dark = shade(color, 0.42f)
+    // geometry (dp): outline 2.5, face 51, lip 8, drop shadow room 5  -> 69 total
+    Box(modifier.fillMaxWidth().height(69.dp).juicy(onClick = onClick)) {
+        Canvas(Modifier.matchParentSize()) {
+            val d = density
+            val w = size.width
+            val edge = 2.5f * d
+            val faceH = 51f * d
+            val lip = 8f * d
+            val h = edge * 2 + faceH + lip
+            val r = 22f * d
+            // soft drop shadow (two layers = cheap blur)
+            drawRoundRect(Color.Black, Offset(1f * d, 5f * d), Size(w - 2f * d, h), CornerRadius(r), alpha = 0.10f)
+            drawRoundRect(Color.Black, Offset(3f * d, 4f * d), Size(w - 6f * d, h), CornerRadius(r), alpha = 0.14f)
+            // dark outline + 3D lip
+            drawRoundRect(dark, Offset.Zero, Size(w, h), CornerRadius(r))
+            drawRoundRect(
+                Brush.verticalGradient(listOf(shade(color, 0.72f), shade(color, 0.58f)), startY = edge + faceH * 0.5f, endY = h - edge),
+                Offset(edge, edge), Size(w - 2 * edge, h - 2 * edge), CornerRadius(r - edge),
+            )
+            // face
+            val fx = edge
+            val fy = edge
+            val fw = w - 2 * edge
+            val fr = r - edge
+            drawRoundRect(
+                Brush.verticalGradient(listOf(lerp(color, Color.White, 0.30f), color, shade(color, 0.93f)), startY = fy, endY = fy + faceH),
+                Offset(fx, fy), Size(fw, faceH), CornerRadius(fr),
+            )
+            val facePath = Path().apply { addRoundRect(RoundRect(fx, fy, fx + fw, fy + faceH, CornerRadius(fr))) }
+            clipPath(facePath) {
+                // glossy top band
+                drawRoundRect(
+                    Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.50f), Color.White.copy(alpha = 0.06f)), startY = fy + 3f * d, endY = fy + faceH * 0.48f),
+                    Offset(fx + 9f * d, fy + 3f * d), Size(fw - 18f * d, faceH * 0.42f), CornerRadius(faceH * 0.21f),
+                )
+                // light sweep: crosses the face in the first 30% of each cycle, then rests
+                val p = shine / 0.30f
+                if (p < 1f) {
+                    val cx = fx - 60f * d + p * (fw + 120f * d)
+                    drawRect(
+                        Brush.linearGradient(
+                            0f to Color.Transparent, 0.5f to Color.White.copy(alpha = 0.45f), 1f to Color.Transparent,
+                            start = Offset(cx - 22f * d, fy), end = Offset(cx + 8f * d, fy + faceH),
+                        ),
+                        Offset(fx, fy), Size(fw, faceH),
+                    )
+                }
+            }
+            // inner rim light along the top of the face
+            drawRoundRect(
+                Color.White, Offset(fx + 1f * d, fy + 1f * d), Size(fw - 2f * d, faceH - 2f * d), CornerRadius(fr - 1f * d),
+                alpha = 0.35f, style = Stroke(1.5f * d),
+            )
+        }
         Row(
-            Modifier.fillMaxWidth().height(56.dp).clip(shape).background(color),
+            Modifier.fillMaxWidth().padding(top = 2.5.dp).height(51.dp),
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (icon != null) { Icon24(icon, Color.White, 24.dp); Spacer(Modifier.width(10.dp)) }
-            BasicText(text, style = label(22, Color.White, FontWeight.Bold).copy(shadow = Shadow(shade(color, 0.6f), Offset(0f, 3f), 0f)))
+            Box {
+                val base = label(24, Color.White, FontWeight.Bold)
+                BasicText(text, style = base.copy(color = dark, drawStyle = Stroke(width = 5f * LocalDensity.current.density, join = StrokeJoin.Round)))
+                BasicText(text, style = base.copy(shadow = Shadow(dark, Offset(0f, 4f), 0f)))
+            }
             if (chip != null) {
                 Spacer(Modifier.width(10.dp))
-                Box(Modifier.clip(RoundedCornerShape(8.dp)).background(Color(0x40000000)).padding(horizontal = 7.dp, vertical = 2.dp)) {
+                Box(
+                    Modifier.clip(RoundedCornerShape(9.dp)).background(dark.copy(alpha = 0.55f))
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                ) {
                     BasicText(chip, style = label(13, Color.White, FontWeight.Bold))
                 }
             }
@@ -961,36 +1033,119 @@ private fun GameOver(ui: GameUi) {
 
 private val noAdsIcon = IconSpec(listOf("M5.6 5.6l12.8 12.8"), listOf(Triple(12f, 12f, 9f)))
 
+/**
+ * Candy body shared by the settings controls (same family as BigButton): soft drop shadow, dark outline,
+ * 3D lip, gradient face, glossy top band, rim light. The face occupies [edge, edge + faceH] from the top.
+ */
+private fun DrawScope.candy(color: Color, edgeDp: Float, faceHDp: Float, lipDp: Float, rDp: Float, glossy: Boolean = true) {
+    val d = density
+    val w = size.width
+    val edge = edgeDp * d
+    val faceH = faceHDp * d
+    val h = edge * 2 + faceH + lipDp * d
+    val r = rDp * d
+    val dark = shade(color, 0.42f)
+    drawRoundRect(Color.Black, Offset(2f * d, 4f * d), Size(w - 4f * d, h), CornerRadius(r), alpha = 0.16f)
+    drawRoundRect(dark, Offset.Zero, Size(w, h), CornerRadius(r))
+    drawRoundRect(
+        Brush.verticalGradient(listOf(shade(color, 0.74f), shade(color, 0.6f)), startY = edge + faceH * 0.5f, endY = h - edge),
+        Offset(edge, edge), Size(w - 2 * edge, h - 2 * edge), CornerRadius(r - edge),
+    )
+    val fw = w - 2 * edge
+    val fr = r - edge
+    drawRoundRect(
+        Brush.verticalGradient(listOf(lerp(color, Color.White, 0.30f), color, shade(color, 0.93f)), startY = edge, endY = edge + faceH),
+        Offset(edge, edge), Size(fw, faceH), CornerRadius(fr),
+    )
+    if (glossy) drawRoundRect(
+        Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.50f), Color.White.copy(alpha = 0.05f)), startY = edge + 2f * d, endY = edge + faceH * 0.5f),
+        Offset(edge + 6f * d, edge + 2.5f * d), Size(fw - 12f * d, faceH * 0.42f), CornerRadius(minOf(faceH * 0.21f, fr)),
+    )
+    drawRoundRect(
+        Color.White, Offset(edge + 1f * d, edge + 1f * d), Size(fw - 2f * d, faceH - 2f * d), CornerRadius(fr - 1f * d),
+        alpha = 0.32f, style = Stroke(1.4f * d),
+    )
+}
+
+/** Text with a dark outline + drop shadow, like the big buttons. */
+@Composable
+private fun CandyText(text: String, size: Int, dark: Color, stroke: Float = 4f) {
+    val base = label(size, Color.White, FontWeight.Bold)
+    Box {
+        BasicText(text, style = base.copy(color = dark, drawStyle = Stroke(width = stroke * LocalDensity.current.density, join = StrokeJoin.Round)))
+        BasicText(text, style = base.copy(shadow = Shadow(dark, Offset(0f, 3f), 0f)))
+    }
+}
+
+/**
+ * Settings row: a soft raised panel with the label, and a premium switch: a sunken track (inner shadow)
+ * with a glossy bevelled knob that springs across; the track fills candy green when on.
+ */
 @Composable
 private fun ToggleRow(text: String, on: Boolean, onClick: () -> Unit) {
-    val knob by animateDpAsState(if (on) 26.dp else 2.dp, spring(dampingRatio = 0.6f, stiffness = 700f), label = "knob")
-    val track by animateColorAsState(if (on) Color(0xFF3FBF6E) else Color(0xFFC9C3DD), tween(180), label = "track")
-    Row(
-        Modifier.fillMaxWidth().height(54.dp).clip(RoundedCornerShape(16.dp)).background(Color(0xFFF2EFFA))
-            .juicy(onClick = onClick).padding(horizontal = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        BasicText(text, style = label(20, Pal.ink, FontWeight.SemiBold), modifier = Modifier.weight(1f))
-        Box(Modifier.size(width = 56.dp, height = 30.dp).clip(RoundedCornerShape(15.dp)).background(track)) {
-            Box(Modifier.offset(x = knob, y = 2.dp).size(26.dp).clip(CircleShape).background(Color.White))
+    val knob by animateDpAsState(if (on) 28.dp else 3.dp, spring(dampingRatio = 0.6f, stiffness = 700f), label = "knob")
+    val track by animateColorAsState(if (on) Color(0xFF3FBF6E) else Color(0xFFB9B1D6), tween(180), label = "track")
+    Box(Modifier.fillMaxWidth().height(60.dp).juicy(onClick = onClick)) {
+        Canvas(Modifier.matchParentSize()) {
+            val d = density
+            val w = size.width
+            // panel: lilac lip under a pale face
+            drawRoundRect(Color(0xFFD5CCF2), Offset(0f, 4f * d), Size(w, 54f * d), CornerRadius(17f * d))
+            drawRoundRect(
+                Brush.verticalGradient(listOf(Color.White, Color(0xFFF1ECFC)), startY = 0f, endY = 54f * d),
+                Offset.Zero, Size(w, 54f * d), CornerRadius(17f * d),
+            )
+            // sunken track
+            val tw = 60f * d
+            val th = 32f * d
+            val tx = w - 16f * d - tw
+            val ty = (54f * d - th) / 2
+            drawRoundRect(shade(track, 0.55f), Offset(tx, ty), Size(tw, th), CornerRadius(th / 2))
+            drawRoundRect(track, Offset(tx, ty + 2.5f * d), Size(tw, th - 2.5f * d), CornerRadius(th / 2))
+            drawRoundRect(Color.Black, Offset(tx, ty), Size(tw, th), CornerRadius(th / 2), alpha = 0.18f, style = Stroke(1.2f * d))
+            // knob: shadow, bevelled white body, gloss
+            val ks = 26f * d
+            val kx = tx + knob.toPx()
+            val ky = ty + (th - ks) / 2
+            drawCircle(Color.Black, ks / 2, Offset(kx + ks / 2, ky + ks / 2 + 2.5f * d), alpha = 0.22f)
+            drawCircle(Color(0xFFD9D2EE), ks / 2, Offset(kx + ks / 2, ky + ks / 2 + 1.2f * d))
+            drawCircle(
+                Brush.verticalGradient(listOf(Color.White, Color(0xFFF0ECFA)), startY = ky, endY = ky + ks),
+                ks / 2 - 1f * d, Offset(kx + ks / 2, ky + ks / 2),
+            )
         }
+        BasicText(
+            text, style = label(21, Pal.ink, FontWeight.Bold),
+            modifier = Modifier.align(Alignment.CenterStart).padding(start = 18.dp, bottom = 6.dp),
+        )
     }
 }
 
 @Composable
 private fun TileButton(icon: IconSpec, text: String, color: Color, modifier: Modifier, enabled: Boolean = true, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(18.dp)
     val c = if (enabled) color else Color(0xFFB9B3CF)
-    Box(modifier.height(84.dp).juicy(enabled, onClick)) {
-        Box(Modifier.matchParentSize().padding(top = 5.dp).clip(shape).background(shade(c, 0.72f)))
+    // outline 2.5, face 74, lip 7, shadow room 4 -> 90
+    Box(modifier.height(90.dp).juicy(enabled, onClick)) {
+        Canvas(Modifier.matchParentSize()) { candy(c, 2.5f, 74f, 7f, 20f) }
         Column(
-            Modifier.fillMaxWidth().height(79.dp).clip(shape).background(c),
+            Modifier.fillMaxWidth().padding(top = 2.5.dp).height(74.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            Icon24(icon, Color.White, 28.dp)
-            Spacer(Modifier.height(4.dp))
-            BasicText(text, style = label(15, Color.White, FontWeight.Bold))
+            Icon24(icon, Color.White, 30.dp)
+            Spacer(Modifier.height(3.dp))
+            CandyText(text, 16, shade(c, 0.42f), stroke = 3.5f)
+        }
+    }
+}
+
+/** Round candy close button (red), top-right of popups. */
+@Composable
+private fun CloseButton(onClick: () -> Unit) {
+    Box(Modifier.size(width = 44.dp, height = 50.dp).juicy(onClick = onClick).semantics { contentDescription = "Close" }) {
+        Canvas(Modifier.matchParentSize()) { candy(Color(0xFFFF4D5E), 2f, 38f, 5f, 21f) }
+        Box(Modifier.padding(top = 2.dp).size(width = 44.dp, height = 38.dp), contentAlignment = Alignment.Center) {
+            Icon24(Icons.close, Color.White, 20.dp)
         }
     }
 }
@@ -1002,11 +1157,7 @@ private fun Settings(ui: GameUi) {
             ChunkyCard {
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                     BasicText("Settings", style = label(28, Pal.ink, FontWeight.Bold))
-                    Box(
-                        Modifier.align(Alignment.CenterEnd).size(40.dp).clip(CircleShape).background(Color(0xFFF2EFFA))
-                            .juicy { ui.sfx(Sfx.TAP); ui.showSettings = false }.semantics { contentDescription = "Close" },
-                        contentAlignment = Alignment.Center,
-                    ) { Icon24(Icons.close, Pal.ink, 20.dp) }
+                    Box(Modifier.align(Alignment.CenterEnd)) { CloseButton { ui.sfx(Sfx.TAP); ui.showSettings = false } }
                 }
                 ToggleRow("Sound", !ui.muted) { ui.toggleSound() }
                 ToggleRow("Music", ui.music) { ui.toggleMusic() }
@@ -1040,21 +1191,82 @@ private fun LogoBlocks(ui: GameUi) {
     }
 }
 
-/** Slow drifting blocks behind the home screen. */
+/**
+ * Home background ambience, done the way studio menus do it:
+ * - real 3D jewel blocks, kept SOLID and pushed back with atmospheric haze (mixed toward the theme color), never see-through
+ * - depth: far layer small/faint/slow, near layer bigger/brighter/faster (parallax)
+ * - calm motion: slow rise, gentle sway and tilt, fade in/out at top and bottom
+ * - framing: they live at the sides and fade near the center column, so the logo, mascot and buttons stay clean
+ * - a few rising light motes that twinkle
+ */
 @Composable
 private fun DriftBlocks(ui: GameUi) {
     Canvas(Modifier.fillMaxSize()) {
         val t = ui.now / 1000f
-        val r = Random(7)
-        repeat(10) {
-            val bs = (26 + r.nextInt(30)).dp.toPx()
-            val speed = (14 + r.nextInt(22)).dp.toPx()
-            val x = r.nextFloat() * size.width
-            val y = size.height - ((t * speed + r.nextFloat() * size.height) % (size.height + bs * 2)) + bs
-            val rot = t * (r.nextFloat() - 0.5f) * 40f + r.nextFloat() * 360f
-            rotate(rot, Offset(x + bs / 2, y + bs / 2)) { block(x, y, bs, Pal.block(1 + r.nextInt(5)), alpha = 0.22f) }
+        val w = size.width
+        val h = size.height
+        val r = Random(11)
+        // layer: count, size dp, speed dp/s -> presence (how much of the block's own color shows through the haze)
+        val layers = listOf(Triple(6, 16f, 9f) to 0.50f, Triple(5, 26f, 16f) to 0.66f, Triple(3, 38f, 26f) to 0.82f)
+        layers.forEach { (spec, a0) ->
+            val (count, sizeDp, speedDp) = spec
+            repeat(count) { i ->
+                val tint = Pal.block(1 + r.nextInt(5))
+                val bs = (sizeDp * (0.85f + 0.3f * r.nextFloat())).dp.toPx()
+                val speed = speedDp.dp.toPx() * (0.85f + 0.3f * r.nextFloat())
+                val phase = r.nextFloat()
+                // alternate sides, stay mostly in the outer bands
+                val side = if ((i + count) % 2 == 0) 0f else 1f
+                val band = 0.03f + 0.17f * r.nextFloat()
+                val baseX = if (side == 0f) band * w else (1f - band) * w
+                val span = h + bs * 2
+                val y = h + bs - ((t * speed + phase * span) % span)
+                val x = baseX + sin(t * 0.5f + phase * 6.28f) * 10.dp.toPx()
+                val tilt = (r.nextFloat() - 0.5f) * 24f + sin(t * 0.4f + phase * 9f) * 6f
+                // fade at the top/bottom and toward the center column
+                val vy = (y / h).coerceIn(0f, 1f)
+                // fade out at the bottom and well before the top bar (trophy / gear)
+                val edgeFade = minOf(((vy - 0.14f) / 0.12f), ((1f - vy) / 0.10f)).coerceIn(0f, 1f)
+                val cx = kotlin.math.abs(x - w / 2) / (w / 2)
+                val centerFade = ((cx - 0.55f) / 0.25f).coerceIn(0f, 1f)
+                val fade = edgeFade * centerFade
+                val a = a0 * fade
+                if (a > 0.01f) rotate(tilt, Offset(x, y)) { hazeBlock(x - bs / 2, y - bs / 2, bs, tint, a) }
+            }
+        }
+        // rising light motes
+        repeat(12) { i ->
+            val speed = (10f + 14f * r.nextFloat()).dp.toPx()
+            val phase = r.nextFloat()
+            val span = h + 40.dp.toPx()
+            val y = h + 20.dp.toPx() - ((t * speed + phase * span) % span)
+            val x = r.nextFloat() * w + sin(t * 0.7f + i) * 14.dp.toPx()
+            val vy = (y / h).coerceIn(0f, 1f)
+            val fade = (minOf(vy, 1f - vy) / 0.15f).coerceIn(0f, 1f)
+            val tw = 0.55f + 0.45f * sin(t * (1.5f + phase) + i * 2f)
+            val rad = (1.4f + 1.8f * phase).dp.toPx()
+            drawCircle(Color.White, rad * 3f, Offset(x, y), alpha = 0.05f * fade * tw)
+            drawCircle(Color.White, rad, Offset(x, y), alpha = 0.32f * fade * tw)
         }
     }
+}
+
+/**
+ * The game's 3D jewel block, pushed back into the distance with atmospheric haze: the block stays SOLID
+ * (no see-through mud) and its colors are mixed toward the theme background. presence 0 = invisible, 1 = full color.
+ */
+private fun DrawScope.hazeBlock(x: Float, y: Float, s: Float, color: Color, presence: Float) {
+    val bg = Pal.bg
+    val b = s * 0.14f
+    val x2 = x + s
+    val y2 = y + s
+    fun hz(c: Color) = lerp(bg, c, presence)
+    drawRect(hz(shade(color, 0.75f)), Offset(x, y), Size(s, s))
+    quad(x, y, x2, y, x2 - b, y + b, x + b, y + b, hz(lerp(color, Color.White, 0.3f)), 1f)
+    quad(x, y, x + b, y + b, x + b, y2 - b, x, y2, hz(lerp(color, Color.White, 0.08f)), 1f)
+    quad(x2, y, x2, y2, x2 - b, y2 - b, x2 - b, y + b, hz(shade(color, 0.78f)), 1f)
+    quad(x, y2, x + b, y2 - b, x2 - b, y2 - b, x2, y2, hz(shade(color, 0.6f)), 1f)
+    drawRect(hz(color), Offset(x + b, y + b), Size(s - 2 * b, s - 2 * b))
 }
 
 /** The mascot art (design/mascot_source.jpg, cut out): floats, sways gently, with glints twinkling around it. */
