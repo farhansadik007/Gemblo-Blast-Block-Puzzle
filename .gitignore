@@ -1,0 +1,34 @@
+# Gradle / Kotlin / build output
+.gradle/
+.kotlin/
+build/
+app/build/
+release-output/
+*.apk
+*.aab
+*.log
+
+# Local machine config (SDK path) - never commit
+local.properties
+
+# Signing keys and their passwords - never commit
+*.jks
+*.keystore
+keystore/
+keystore.properties
+signing.properties
+
+# Firebase / Google config with project ids
+google-services.json
+
+# IDE / OS
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Scratch
+text-ss/
+captures/
+*.png.tmp
