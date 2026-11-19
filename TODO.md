@@ -25,3 +25,4 @@ Checklist:
 
 - [x] Grain texture on the Home background (`Grain.kt`)
 - [x] Premium candy buttons: Continue/Play, game-over buttons, and the settings popup (Home, Replay, No Ads, close, switches)
+- [x] App icon: a gold plus piece hovering over its landing spot on a 5x5 jewel board. Drawn by `tools/make_icon.py` (run it to regenerate). Play Store image: `design/icon_512.png`; launcher: adaptive icon in `res/mipmap-*`

@@ -28,3 +28,4 @@ Debug builds always use Google's public **test** AdMob ids. Release builds refus
 - Code: all rights reserved, Paper Crane Labs.
 - Font: Fredoka, SIL Open Font License 1.1, see [licenses/Fredoka-OFL.txt](licenses/Fredoka-OFL.txt).
 - Gear icon outline: from Lucide (ISC license).
+- App icon: original, drawn from code by `tools/make_icon.py` (no outside images).
