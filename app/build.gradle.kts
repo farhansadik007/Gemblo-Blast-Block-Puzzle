@@ -7,11 +7,13 @@ plugins {
 // Gemblo has no AdMob app yet: create it at apps.admob.com (app id has "~", ad unit ids have "/") and paste them here.
 val admobAppId = "ca-app-pub-3940256099942544~3347511713"
 val admobBannerId = "ca-app-pub-3940256099942544/9214589741"   // bottom banner (adaptive)
+val admobInterstitialId = "ca-app-pub-3940256099942544/1033173712"   // between games
+val admobRewardedId = "ca-app-pub-3940256099942544/5224354917"   // Revive video
 
 // A release with test ids would earn nothing, so refuse to build one.
 tasks.matching { it.name == "preReleaseBuild" }.configureEach {
     doFirst {
-        require(listOf(admobAppId, admobBannerId).all { it.startsWith("ca-app-pub-") && !it.contains("3940256099942544") }) {
+        require(listOf(admobAppId, admobBannerId, admobInterstitialId, admobRewardedId).all { it.startsWith("ca-app-pub-") && !it.contains("3940256099942544") }) {
             "Fill in the real AdMob ids at the top of app/build.gradle.kts before building a release."
         }
     }
@@ -35,10 +37,14 @@ android {
             // Google's public TEST ids: safe to click, never earn, never risk the AdMob account
             manifestPlaceholders["admobAppId"] = "ca-app-pub-3940256099942544~3347511713"
             buildConfigField("String", "ADMOB_BANNER", "\"ca-app-pub-3940256099942544/9214589741\"")
+            buildConfigField("String", "ADMOB_INTERSTITIAL", "\"ca-app-pub-3940256099942544/1033173712\"")
+            buildConfigField("String", "ADMOB_REWARDED", "\"ca-app-pub-3940256099942544/5224354917\"")
         }
         release {
             manifestPlaceholders["admobAppId"] = admobAppId
             buildConfigField("String", "ADMOB_BANNER", "\"$admobBannerId\"")
+            buildConfigField("String", "ADMOB_INTERSTITIAL", "\"$admobInterstitialId\"")
+            buildConfigField("String", "ADMOB_REWARDED", "\"$admobRewardedId\"")
         }
     }
 
@@ -67,6 +73,8 @@ dependencies {
 
     implementation(libs.play.services.ads)
     implementation(libs.ump)
+    implementation(libs.billing)
+    implementation(libs.androidx.work)
 
     testImplementation("junit:junit:4.13.2")
 }

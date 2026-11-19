@@ -1,0 +1,17 @@
+# Sound sources
+
+Sounds not listed here are synthesized in code (`Sound.kt`) and need no license.
+
+| File | Used for | Source | Author | License |
+|---|---|---|---|---|
+| `app/src/main/res/raw/sfx_pick.ogg` | Picking up a piece | Pixabay, "Bubble Pop" (id 293342) | Universfield | [Pixabay Content License](https://pixabay.com/service/license-summary/): free for commercial use, no attribution required. Trimmed and converted to mono OGG. |
+| `app/src/main/res/raw/sfx_lose.ogg` | Out of space (game over without a new best) | Pixabay, "Fail Trombone" (id 229173) | Universfield | [Pixabay Content License](https://pixabay.com/service/license-summary/): free for commercial use, no attribution required. Trimmed and converted to mono OGG. |
+| `app/src/main/res/raw/sfx_whoosh.ogg` | A fresh set of pieces sliding into the tray | Pixabay, "Simple Whoosh" (id 382724) | Dragon Studio | [Pixabay Content License](https://pixabay.com/service/license-summary/): free for commercial use, no attribution required. Trimmed and converted to mono OGG. |
+| `app/src/main/res/raw/voice_excellent.ogg` | Hype voice, level 1 | Pixabay, "Positive tone man says Excellent" (id 184040) | floraphonic | [Pixabay Content License](https://pixabay.com/service/license-summary/): free for commercial use, no attribution required. Silence trimmed, converted to mono OGG. |
+| `app/src/main/res/raw/voice_amazing.ogg` | Hype voice, level 2 | Pixabay, "Man says Amazing" (id 184036) | floraphonic | [Pixabay Content License](https://pixabay.com/service/license-summary/): free for commercial use, no attribution required. Silence trimmed, converted to mono OGG. |
+| `app/src/main/res/raw/voice_crazy.ogg` | Hype voice, level 3 | Pixabay, "Man says Crazy" (id 184038) | floraphonic | [Pixabay Content License](https://pixabay.com/service/license-summary/): free for commercial use, no attribution required. Silence trimmed, converted to mono OGG. |
+| `app/src/main/res/raw/voice_insane.ogg` | Hype voice, level 4 | Pixabay, "Positive tone man says Insane" (id 216084) | floraphonic | [Pixabay Content License](https://pixabay.com/service/license-summary/): free for commercial use, no attribution required. Silence trimmed, converted to mono OGG. |
+| `app/src/main/res/raw/sfx_clear.ogg` | Line clear (pitch climbs with the combo) | Pixabay, "Clear Combo 1" (id 394489) | freesound_gamestudio | [Pixabay Content License](https://pixabay.com/service/license-summary/): free for commercial use, no attribution required. Silence trimmed, louder, converted to mono OGG. |
+| `app/src/main/res/raw/sfx_big.ogg` | Big clear: 2+ lines or combo x4+ | Pixabay, "Clear Combo 5" (id 394488) | freesound_gamestudio | [Pixabay Content License](https://pixabay.com/service/license-summary/): free for commercial use, no attribution required. Silence trimmed, louder, converted to mono OGG. |
+| `app/src/main/res/raw/sfx_win.ogg` | Journey level complete, new best, All clear, story picture complete | Pixabay, "Level Complete" (id 394515) | freesound_gamestudio | [Pixabay Content License](https://pixabay.com/service/license-summary/): free for commercial use, no attribution required. Silence trimmed, louder, converted to mono OGG. |
+| `app/src/main/res/raw/sfx_levelup.ogg` | Story picture piece reveal (Level complete popup) | Pixabay, "Level Up 05" (id 326133) | Universfield | [Pixabay Content License](https://pixabay.com/service/license-summary/): free for commercial use, no attribution required. Silence trimmed, louder, converted to mono OGG. |

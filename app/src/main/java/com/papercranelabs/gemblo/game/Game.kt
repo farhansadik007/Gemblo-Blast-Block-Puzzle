@@ -55,6 +55,9 @@ object Shapes {
         Family(rotations(shape("###", ".#.")), 3),
         Family(rotations(shape("##.", ".##")), 2),
         Family(rotations(shape(".##", "##.")), 2),
+        // diagonals: blocks touching only at the corners (both directions come from the rotations)
+        Family(rotations(shape("#.", ".#")), 3),
+        Family(rotations(shape("#..", ".#.", "..#")), 2),
     )
     private val total = families.sumOf { it.weight }
 
@@ -227,6 +230,29 @@ class Game(seed: Long = System.nanoTime()) {
         }
         if (isStuck()) newTray()
         return out
+    }
+
+    /**
+     * Journey: scatter random pieces on the board (about [cells] blocks) so a level starts messy.
+     * Never makes a full line, then deals a tray that fits the new board.
+     */
+    fun seed(cells: Int) {
+        var filled = 0
+        var tries = 0
+        while (filled < cells && tries < 500) {
+            tries++
+            val p = Piece(Shapes.random(rng), 1 + rng.nextInt(COLORS))
+            val r = rng.nextInt(N - p.h + 1)
+            val c = rng.nextInt(N - p.w + 1)
+            if (!canPlace(p, r, c)) continue
+            val g = grid.copyOf()
+            p.cells.forEach { g[(r + it.r) * N + c + it.c] = p.color }
+            val (rows, cols) = fullLines(g)
+            if (rows.isNotEmpty() || cols.isNotEmpty()) continue
+            g.copyInto(grid)
+            filled += p.cells.size
+        }
+        newTray()
     }
 
     /** Hammer booster: smash one block. Returns its color, or 0. */

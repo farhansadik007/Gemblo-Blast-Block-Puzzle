@@ -13,7 +13,10 @@ import com.papercranelabs.gemblo.game.Cell
 import com.papercranelabs.gemblo.game.Game
 import com.papercranelabs.gemblo.game.N
 import com.papercranelabs.gemblo.game.Piece
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.log2
+import kotlin.math.sin
 import kotlin.math.floor
 import kotlin.math.hypot
 import kotlin.math.pow
@@ -33,20 +36,60 @@ class Prefs(ctx: Context) {
     var vibrate: Boolean
         get() = sp.getBoolean("vibrate", true)
         set(v) { sp.edit().putBoolean("vibrate", v).apply() }
-    /** Test build: set by the "No Ads" button. Real build: set by the Play Billing purchase. */
+    /** Set by the Play Billing "No Ads" purchase (test build: by the No Ads button, free). */
     var noAds: Boolean
         get() = sp.getBoolean("no_ads", false)
         set(v) { sp.edit().putBoolean("no_ads", v).apply() }
     var theme: Int
         get() = sp.getInt("theme", 0)
         set(v) { sp.edit().putInt("theme", v).apply() }
+    /** Finished games (counted only while ads are on): drives the between-games ads and the No Ads offer. */
+    var gamesPlayed: Int
+        get() = sp.getInt("games_played", 0)
+        set(v) { sp.edit().putInt("games_played", v).apply() }
+    /** The game count at which the No Ads offer pops up next (every 5-8 games). */
+    var nextOffer: Int
+        get() = sp.getInt("next_offer", 0)
+        set(v) { sp.edit().putInt("next_offer", v).apply() }
+    /** Daily reminder notification on/off, and whether we've asked for the notification permission yet. */
+    var reminders: Boolean
+        get() = sp.getBoolean("reminders", true)
+        set(v) { sp.edit().putBoolean("reminders", v).apply() }
+    var notifAsked: Boolean
+        get() = sp.getBoolean("notif_asked", false)
+        set(v) { sp.edit().putBoolean("notif_asked", v).apply() }
+    /** The day (epoch day) of the last game played: no reminder on a day already played. */
+    var lastPlayDay: Long
+        get() = sp.getLong("last_play_day", -1L)
+        set(v) { sp.edit().putLong("last_play_day", v).apply() }
+    /** Journey: the next level to play (1-based). Levels below it are passed. */
+    var journeyLevel: Int
+        get() = sp.getInt("journey_level", 1)
+        set(v) { sp.edit().putInt("journey_level", v).apply() }
     /** The game in progress (see Game.save), or null when there's nothing to continue. */
     var savedGame: String?
         get() = sp.getString("saved_game", null)
         set(v) { sp.edit().putString("saved_game", v).apply() }
 }
 
-enum class Screen { Home, Game }
+enum class Screen { Home, Game, Journey }
+enum class Mode { Classic, Journey }
+
+/**
+ * Journey: a straight road of levels going up. Each level starts with random blocks on the board and has a
+ * target score. Every level passed adds one piece to a 3x3 story picture; every 9 levels a picture is finished.
+ */
+object Journey {
+    const val PIECES = 9
+    fun target(level: Int) = 500 + 150 * (level - 1)
+    fun startBlocks(level: Int) = minOf(10 + level, 30)
+    /** Which picture (0-based) this level builds. */
+    fun picture(level: Int) = (level - 1) / PIECES
+    /** Which piece (0..8) of its picture this level adds. */
+    fun piece(level: Int) = (level - 1) % PIECES
+    /** Each picture's stretch of road has its own color theme. */
+    fun theme(level: Int) = Themes.all[picture(level) % Themes.all.size]
+}
 
 class FxClear(val r: Int, val c: Int, val color: Int, val t0: Long)
 class FxBeam(val isRow: Boolean, val index: Int, val color: Int, val t0: Long)
@@ -117,6 +160,38 @@ class Metrics(val w: Float, val h: Float, val dp: Float) {
 }
 
 class GameUi(var game: Game, private val prefs: Prefs, private val sound: SoundFx?) {
+    /** Ads + store, provided by MainActivity. Null in previews: everything is free and instant then. */
+    interface Host {
+        /** Localized No Ads price from Google Play, or null until it loads. */
+        val price: String?
+        fun showInterstitial()
+        fun showRewarded(onReward: () -> Unit)
+        /** Opens the Google Play purchase. False if the store isn't available. */
+        fun buyNoAds(): Boolean
+        /** Asks for the notification permission (Android 13+), once. */
+        fun askNotifications()
+        /** Turns the daily reminder schedule on or off. */
+        fun setReminders(on: Boolean)
+    }
+    var host: Host? = null
+
+    // ---------------- modes
+    var mode by mutableStateOf(Mode.Classic)
+        private set
+    private val classicGame = game
+    private val journeyGame = Game()
+    /** The next Journey level to play. */
+    var journeyLevel by mutableIntStateOf(prefs.journeyLevel)
+        private set
+    /** The Journey level on the board right now. */
+    var playingLevel by mutableIntStateOf(1)
+        private set
+    val target get() = Journey.target(playingLevel)
+    /** The target was reached: the board stops, then the "Level complete" popup shows. */
+    var levelDone by mutableStateOf(false)
+        private set
+    private var levelDoneAt = -1L
+    val levelDoneVisible get() = levelDone && now - levelDoneAt > 900
     var screen by mutableStateOf(Screen.Home)
     var now by mutableLongStateOf(0L)
     var metrics: Metrics? = null
@@ -135,19 +210,62 @@ class GameUi(var game: Game, private val prefs: Prefs, private val sound: SoundF
     val bornAt = LongArray(N * N)
     var displayScore by mutableFloatStateOf(0f)
     var scoreBumpAt by mutableLongStateOf(-10_000L)
+    // score count-up: each gain counts from the old number to the new one, easing out; bigger gains count longer
+    private var countFrom = 0f
+    private var countTo = 0f
+    private var countAt = -10_000L
+    private var countDur = 1L
+    /** 0..1 while a sizable gain is counting up (peaks mid-count): the score grows and glows gold. */
+    val countGlow: Float get() {
+        val p = (now - countAt).toFloat() / countDur
+        if (p !in 0f..1f) return 0f
+        return sin(p * PI.toFloat()) * ((countTo - countFrom) / 300f).coerceIn(0f, 1f)
+    }
     var best by mutableIntStateOf(prefs.best)
     var stuckAt by mutableLongStateOf(-1L)
     var showSettings by mutableStateOf(false)
+    /** The PaperCrane Labs splash, shown once when the app opens. */
+    var showSplash by mutableStateOf(true)
+    /** The No Ads offer popup (Home button, settings tile, and on its own every 5-8 games). */
+    var showOffer by mutableStateOf(false)
+    /** "You're ad-free" popup: tapping the Premium crown (Home) or the Premium tile (settings). */
+    var showPremium by mutableStateOf(false)
+    /** Journey's album of story pictures, and the one picture shown big (-1 = none). */
+    var showAlbum by mutableStateOf(false)
+    var albumView by mutableIntStateOf(-1)
     var combo by mutableIntStateOf(0)
+    private var hypeSaid = 0
     var movesLeft by mutableIntStateOf(3)
     var beatBest by mutableStateOf(false)
     var muted by mutableStateOf(prefs.muted)
     var music by mutableStateOf(prefs.music)
     var vibrate by mutableStateOf(prefs.vibrate)
     var noAds by mutableStateOf(prefs.noAds)
+    var reminders by mutableStateOf(prefs.reminders)
     var shakeAt = -10_000L
+    /** Combo border around the grid: glow 0..1 (gold), rainbow mix 0..1, and a flash on every clear. */
+    var borderGlow = 0f
+        private set
+    var borderRainbow = 0f
+        private set
+    var clearAt = -10_000L
+        private set
+    private var rainbowUntil = -10_000L
     var shakeAmp = 0f
     var trayAt = -10_000L
+    /**
+     * Grid intro (every new, resumed or Journey game): a diagonal wave of colored blocks flashes through
+     * every cell, and the board's real blocks pop in behind it. Input waits until it's over.
+     */
+    var introAt = -10_000L
+        private set
+    val introPlaying get() = now - introAt < INTRO_MS
+
+    private fun startIntro() {
+        introAt = now
+        for (i in 0 until N * N) bornAt[i] = if (game.grid[i] != 0) now + introDelay(i / N, i % N) + 230 else 0
+        sfx(Sfx.WHOOSH)
+    }
     private var seenTray = game.trayVersion
     private var bestAtStart = prefs.best
     private var losePlayed = false
@@ -174,13 +292,13 @@ class GameUi(var game: Game, private val prefs: Prefs, private val sound: SoundF
         canContinue = game.inProgress()
     }
 
-    /** Saves the game in progress (or clears the save once it's over). Called after every change and on pause. */
+    /** Saves the Classic game in progress (or clears the save once it's over). Called after every change and on pause. */
     fun save() {
-        canContinue = game.inProgress()
-        prefs.savedGame = if (canContinue) game.save() else null
+        canContinue = classicGame.inProgress()
+        prefs.savedGame = if (canContinue) classicGame.save() else null
     }
 
-    val gameOverVisible get() = stuckAt >= 0 && now - stuckAt > 900
+    val gameOverVisible get() = stuckAt >= 0 && now - stuckAt > 900 && !levelDone
 
     fun sfx(s: Sfx, rate: Float = 1f) = sound?.play(s, rate)
 
@@ -210,6 +328,17 @@ class GameUi(var game: Game, private val prefs: Prefs, private val sound: SoundF
         sfx(Sfx.TAP)
     }
 
+    fun toggleReminders() {
+        reminders = !reminders
+        prefs.reminders = reminders
+        host?.setReminders(reminders)
+        if (reminders) host?.askNotifications()
+        sfx(Sfx.TAP)
+    }
+
+    /** Today counts as played (the evening reminder skips today). */
+    private fun markPlayed() { prefs.lastPlayDay = java.time.LocalDate.now().toEpochDay() }
+
     fun toggleVibrate() {
         vibrate = !vibrate
         prefs.vibrate = vibrate
@@ -218,39 +347,231 @@ class GameUi(var game: Game, private val prefs: Prefs, private val sound: SoundF
         sfx(Sfx.TAP)
     }
 
-    /** Test build: toggles freely (so ads can be turned back on). Release: becomes the Play Billing "Remove Ads" purchase. */
-    fun toggleNoAds() {
-        if (noAds && !BuildConfig.DEBUG) return
-        noAds = !noAds
-        prefs.noAds = noAds
-        sfx(if (noAds) Sfx.FANFARE else Sfx.TAP)
+    // ---------------- No Ads (premium)
+    fun openOffer() {
+        sfx(Sfx.TAP)
+        showSettings = false
+        showOffer = true
+    }
+
+    // ---------------- back button
+    /** When Back was pressed on Home: a second press within 2 s exits ("Press back again to exit"). */
+    var exitHintAt by mutableLongStateOf(-10_000L)
+        private set
+
+    /** The phone's Back: closes the top popup, else steps back a screen. Returns false = exit the app. */
+    fun back(): Boolean {
+        when {
+            albumView >= 0 -> closePicture()
+            showOffer -> closeOffer()
+            showPremium -> closePremium()
+            showSettings -> { sfx(Sfx.TAP); showSettings = false }
+            showAlbum -> closeAlbum()
+            levelDoneVisible -> afterLevel()
+            screen == Screen.Game -> goHome()
+            screen == Screen.Journey -> backToHome()
+            else -> {
+                if (now - exitHintAt < 2000) return false
+                exitHintAt = now
+            }
+        }
+        return true
+    }
+
+    fun openAlbum() { sfx(Sfx.TAP); showAlbum = true }
+    fun closeAlbum() { sfx(Sfx.TAP); showAlbum = false }
+    fun viewPicture(i: Int) { sfx(Sfx.TAP); albumView = i }
+    fun closePicture() { sfx(Sfx.TAP); albumView = -1 }
+    /** Road animation: the stretch from level [roadFrom] to the next one fills in gold, starting at [roadAt]. */
+    var roadFrom by mutableIntStateOf(0)
+        private set
+    var roadAt = -10_000L
+        private set
+    /** 0..1 progress of that fill (1 = done). */
+    val roadT get() = ((now - roadAt) / ROAD_MS).coerceIn(0f, 1f)
+
+    /** Pieces earned so far of story picture [i] (0..9). */
+    fun piecesOf(i: Int) = (journeyLevel - 1 - i * Journey.PIECES).coerceIn(0, Journey.PIECES)
+
+    fun openPremium() {
+        sfx(Sfx.TAP)
+        showSettings = false
+        showPremium = true
+    }
+
+    fun closePremium() {
+        sfx(Sfx.TAP)
+        showPremium = false
+    }
+
+    fun closeOffer() {
+        sfx(Sfx.TAP)
+        showOffer = false
+    }
+
+    /** The price button: Google Play's purchase sheet. The test build (not on Play) grants it for free. */
+    fun buyNoAds() {
+        sfx(Sfx.TAP)
+        val h = host
+        if (h == null || !h.buyNoAds()) {
+            if (h == null || BuildConfig.DEBUG) grantNoAds() else storeError = now
+        }
+    }
+
+    /** Set when the store couldn't open (release only): the offer shows a short "try again" note. */
+    var storeError by mutableLongStateOf(-10_000L)
+
+    /** The purchase went through (or was restored at start-up). */
+    fun grantNoAds() {
+        if (noAds) return
+        noAds = true
+        prefs.noAds = true
+        showOffer = false
+        sfx(Sfx.FANFARE)
+        hx?.boom()
+    }
+
+    /** Test build only: the Premium tile turns ads back on, so the free flow can be tested again. */
+    fun debugDropNoAds() {
+        if (!BuildConfig.DEBUG) return
+        noAds = false
+        prefs.noAds = false
+        showPremium = false
+        sfx(Sfx.TAP)
     }
 
     // ---------------- screens
     /** Home -> game: continue the game in progress, otherwise start a new one. Fresh colors each time. */
     fun play() {
         sfx(Sfx.TAP)
+        useClassic()
         newTheme()
+        val finished = !game.inProgress() && game.score > 0
         if (!game.inProgress()) resetGame(changeTheme = false)
         screen = Screen.Game
+        startIntro()
+        markPlayed()
+        if (finished) gameFinished()
     }
 
+    /** Settings "Home": a Journey level goes back to the road, Classic to Home. */
     fun goHome() {
         sfx(Sfx.TAP)
         showSettings = false
+        if (mode == Mode.Journey && screen == Screen.Game) openJourney(tap = false) else screen = Screen.Home
+    }
+
+    /** The Classic game's score (for Home's Continue chip, whatever mode was played last). */
+    val classicScore get() = classicGame.score
+
+    /** Home's "new game" button: always a fresh Classic game. */
+    fun newClassicGame() {
+        useClassic()
+        replay()
+    }
+
+    fun backToHome() {
+        sfx(Sfx.TAP)
         screen = Screen.Home
+    }
+
+    /** Back to the Classic game (and its board, score and combo) after Journey. */
+    private fun useClassic() {
+        if (mode == Mode.Classic) return
+        mode = Mode.Classic
+        game = classicGame
+        clearFx()
+        levelDone = false
+        displayScore = game.score.toFloat()
+        stuckAt = -1
+        beatBest = false
+        bestAtStart = best
+        seenTray = game.trayVersion
+        sync()
+    }
+
+    private fun clearFx() {
+        bornAt.fill(0)
+        borderGlow = 0f; borderRainbow = 0f; rainbowUntil = -10_000L; clearAt = -10_000L
+        clears.clear(); beams.clear(); texts.clear(); rings.clear(); scoreFlights.clear()
+        drag = null; ret = null
+    }
+
+    // ---------------- journey
+    fun openJourney(tap: Boolean = true) {
+        if (tap) sfx(Sfx.TAP)
+        showSettings = false
+        Pal.theme = Journey.theme(journeyLevel)
+        screen = Screen.Journey
+    }
+
+    /** Starts (or restarts) the next Journey level: a messy board and a target score. */
+    fun startLevel(tap: Boolean = true) {
+        if (tap) sfx(Sfx.TAP)
+        mode = Mode.Journey
+        game = journeyGame
+        playingLevel = journeyLevel
+        Pal.theme = Journey.theme(playingLevel)
+        levelDone = false
+        resetGame(changeTheme = false)
+        game.seed(Journey.startBlocks(playingLevel))
+        sync()
+        screen = Screen.Game
+        startIntro()
+        markPlayed()
+    }
+
+    /** "Continue" on the Level complete popup: back up the road (a between-games ad may show here). */
+    fun afterLevel() {
+        sfx(Sfx.TAP)
+        levelDone = false
+        // the road fills in gold from the level just passed up to the next stop
+        roadFrom = playingLevel
+        roadAt = now + 450
+        openJourney(tap = false)
+        gameFinished()
     }
 
     fun replay() {
         sfx(Sfx.TAP)
+        if (mode == Mode.Journey) {
+            val played = game.score > 0
+            startLevel(tap = false)
+            if (played) gameFinished()
+            return
+        }
+        val finished = game.score > 0
         resetGame(changeTheme = true)
         screen = Screen.Game
+        startIntro()
+        markPlayed()
+        if (finished) gameFinished()
+    }
+
+    /**
+     * A game just ended and the next one is starting (free players only):
+     * - every 5-8 games: the No Ads offer
+     * - the first 10 games never show an ad; after that, an ad every 5 games (games 15, 20, 25, ...)
+     * The offer wins if both fall on the same game.
+     */
+    private fun gameFinished() {
+        // after the first finished game: a good moment to ask for the daily reminder permission
+        if (!prefs.notifAsked && reminders) { prefs.notifAsked = true; host?.askNotifications() }
+        if (noAds) return
+        val n = prefs.gamesPlayed + 1
+        prefs.gamesPlayed = n
+        if (prefs.nextOffer == 0) prefs.nextOffer = 5 + rnd.nextInt(4)
+        if (n >= prefs.nextOffer) {
+            prefs.nextOffer = n + 5 + rnd.nextInt(4)
+            showOffer = true
+        } else if (n > FREE_GAMES && (n - FREE_GAMES) % AD_EVERY == 0) {
+            host?.showInterstitial()
+        }
     }
 
     private fun resetGame(changeTheme: Boolean) {
         game.reset()
-        bornAt.fill(0)
-        clears.clear(); beams.clear(); texts.clear(); rings.clear(); scoreFlights.clear()
+        clearFx()
         displayScore = 0f
         stuckAt = -1
         beatBest = false
@@ -284,8 +605,35 @@ class GameUi(var game: Game, private val prefs: Prefs, private val sound: SoundF
         }
         // the counter only counts up when the flying points arrive
         val s = (game.score - scoreFlights.sumOf { it.value }).toFloat()
-        displayScore = if (abs(s - displayScore) < 1f) s else displayScore + (s - displayScore) * 0.2f
-        if (game.trayVersion != seenTray) { seenTray = game.trayVersion; trayAt = now }
+        if (s != countTo) {
+            if (s < countTo || s < displayScore) {
+                // new game / switched mode: no counting down, just show it
+                displayScore = s; countFrom = s; countTo = s; countAt = -10_000L
+            } else {
+                countFrom = displayScore
+                countTo = s
+                countAt = now
+                val gain = s - countFrom
+                countDur = (260f + 230f * log2(1f + gain / 25f)).coerceIn(260f, 1300f).toLong()
+            }
+        }
+        if (displayScore != countTo) {
+            val p = ((now - countAt).toFloat() / countDur).coerceIn(0f, 1f)
+            val e = 1f - (1f - p) * (1f - p) * (1f - p)
+            displayScore = if (p >= 1f) countTo else countFrom + (countTo - countFrom) * e
+            // the number lands: a bounce
+            if (p >= 1f && countTo - countFrom >= 20f) scoreBumpAt = now
+        }
+        // combo border: eases toward its target so it never pops on or off
+        val glowTarget = if (combo >= 2) (0.55f + 0.08f * (combo - 2)).coerceAtMost(0.9f) else 0f
+        borderGlow += (glowTarget - borderGlow) * 0.07f
+        val rainbowTarget = if (combo >= 2 || now < rainbowUntil) 1f else 0f   // any live combo = rainbow border
+        borderRainbow += (rainbowTarget - borderRainbow) * 0.06f
+        if (game.trayVersion != seenTray) {
+            seenTray = game.trayVersion
+            trayAt = maxOf(now, introAt + INTRO_TRAY)   // after the grid intro, if one is playing
+            if (screen != Screen.Home) sfx(Sfx.WHOOSH)   // fresh pieces slide into the tray
+        }
         if (gameOverVisible && !losePlayed) {
             losePlayed = true
             if (beatBest) sfx(Sfx.FANFARE) else sfx(Sfx.LOSE)
@@ -328,7 +676,7 @@ class GameUi(var game: Game, private val prefs: Prefs, private val sound: SoundF
     private fun sync() {
         combo = game.combo
         movesLeft = 3 - game.movesSinceClear
-        if (game.score > best) {
+        if (mode == Mode.Classic && game.score > best) {
             if (!beatBest && bestAtStart > 0) {
                 metrics?.let { m -> texts.add(FxText("NEW BEST!", m.w / 2, m.cellY(1), Pal.block(2), 34f, now + 250)) }
                 sfx(Sfx.FANFARE)
@@ -337,13 +685,23 @@ class GameUi(var game: Game, private val prefs: Prefs, private val sound: SoundF
             best = game.score
             prefs.best = best
         }
-        if (game.isStuck()) {
+        if (mode == Mode.Journey && !levelDone && game.score >= target) {
+            levelDone = true
+            levelDoneAt = now
+            journeyLevel = playingLevel + 1
+            prefs.journeyLevel = journeyLevel
+            metrics?.let { m -> texts.add(FxText("LEVEL COMPLETE!", m.w / 2, m.cellY(2), Pal.block(2), 36f, now + 200, rainbow = true)) }
+            sfx(Sfx.FANFARE)   // the recorded "Level Complete" (the level-up sound plays with the picture reveal)
+            hx?.boom()
+        }
+        if (!levelDone && game.isStuck()) {
             if (stuckAt < 0) { stuckAt = now; losePlayed = false }
         } else stuckAt = -1
         save()
     }
 
     fun startDrag(slot: Int, x: Float, y: Float) {
+        if (levelDone || introPlaying) return
         drag = Drag(slot, x, y, x, y, now)
         ret = null
         sfx(Sfx.PICK)
@@ -369,9 +727,30 @@ class GameUi(var game: Game, private val prefs: Prefs, private val sound: SoundF
             // small quick "+N" from the grid's center straight to the score
             if (game.score > before) scoreFlights.add(ScoreFly(res.points, m.w / 2, m.w / 2, now, hold = false))
         } else {
-            // pitch climbs one semitone per combo step (capped at an octave)
-            sfx(Sfx.CLEAR, 2f.pow(((res.combo - 1).coerceIn(0, 12)) / 12f))
-            if (res.lines >= 2) sfx(Sfx.BIG)
+            clearAt = now
+            if (res.combo >= 4 || res.lines >= 3 || res.flushLines > 0 || res.allClear) rainbowUntil = now + 2600
+            // recorded clear sounds, played as recorded (no pitch shifting): a big moment (2+ lines or combo x4+)
+            // gets the bigger one instead of the normal one
+            val bigHit = res.lines >= 2 || res.combo >= 4
+            sfx(if (bigHit) Sfx.BIG else Sfx.CLEAR)
+            // the combo plays a melody: each step rings the next note of a pentatonic scale (do re mi sol la do),
+            // a big hit adds a harmony note, and combo x3+ adds a sparkle on top
+            val step = (res.combo - 1).coerceIn(0, COMBO_NOTES.size - 1)
+            sfx(Sfx.CHIME, COMBO_NOTES[step])
+            if (bigHit) sfx(Sfx.CHIME, COMBO_NOTES[(step + 2).coerceAtMost(COMBO_NOTES.size - 1)] * (if (step + 2 >= COMBO_NOTES.size) 0.75f else 1f))
+            if (res.combo >= 3) sfx(Sfx.SHIMMER)
+            // hype level 1..4 (Excellent, Amazing, Crazy, Insane) from the combo streak or a big multi-line clear.
+            // The voice speaks (and its word shows) when a new level is reached, or on any 2+ line clear.
+            val hype = maxOf(
+                when { res.combo >= 6 -> 4; res.combo >= 4 -> 3; res.combo == 3 -> 2; res.combo == 2 -> 1; else -> 0 },
+                when { res.lines >= 5 || res.allClear -> 4; res.lines == 4 -> 3; res.lines == 3 -> 2; res.lines == 2 -> 1; else -> 0 },
+            )
+            if (res.combo <= 1) hypeSaid = 0
+            val hypeWord = if (hype > 0 && (hype > hypeSaid || res.lines >= 2)) {
+                hypeSaid = maxOf(hypeSaid, hype)
+                sfx(HYPE_VOICES[hype - 1])
+                HYPE_WORDS[hype - 1]
+            } else null
             if (res.flushLines > 0) sfx(Sfx.FLUSH)
             if (res.allClear) sfx(Sfx.FANFARE)
             if (res.lines >= 2 || res.flushLines > 0 || res.allClear) hx?.big(res.lines + res.flushLines) else hx?.heavy()
@@ -396,12 +775,7 @@ class GameUi(var game: Game, private val prefs: Prefs, private val sound: SoundF
             val lines = mutableListOf<Pair<String, Color>>()
             if (res.allClear) lines += "ALL CLEAR!" to Pal.block(2)
             if (res.flushLines > 0) lines += (if (res.flushLines > 1) "COLOR FLUSH ×${res.flushLines}!" else "COLOR FLUSH!") to Pal.flush
-            when {
-                res.lines >= 4 -> "Unbelievable!"
-                res.lines == 3 -> "Amazing!"
-                res.lines == 2 -> "Great!"
-                else -> null
-            }?.let { lines += it to Pal.text }
+            hypeWord?.let { lines += it to Pal.text }
             if (res.combo >= 2) lines += "Combo ×${res.combo}" to Pal.block(1)
             // words stack above the clear; the points pop at the grid's center, then fly up into the score
             lines.forEachIndexed { i, (t, c) ->
@@ -413,8 +787,16 @@ class GameUi(var game: Game, private val prefs: Prefs, private val sound: SoundF
         sync()
     }
 
-    /** Revive (once per game). Test build: free. Real build: after a rewarded ad. Clears the fullest 3x3 and deals fitting pieces. */
-    fun revive() {
+    /** The Revive button: Premium revives straight away; free players watch a rewarded video first. */
+    fun reviveTapped() {
+        if (game.usedBlast) return
+        sfx(Sfx.TAP)
+        val h = host
+        if (noAds || h == null) revive() else h.showRewarded { if (stuckAt >= 0 && !game.usedBlast) revive() }
+    }
+
+    /** Revive (once per game): clears the fullest 3x3 and deals fitting pieces. */
+    private fun revive() {
         game.usedBlast = true
         game.blast3x3().forEach { (r, c, k) -> clears.add(FxClear(r, c, k, now + 120)) }
         if (game.isStuck()) game.newTray()
@@ -441,3 +823,18 @@ object Themes {
         Theme(Color(0xFFC4633A), Color(0xFF3D170A), Color(0xFF5A2512), Color(0xFF8A3C1E)), // sunset
     )
 }
+
+private const val FREE_GAMES = 10
+/** Combo notes as playback rates of the C6 bell: C, D, E, G, A, C (major pentatonic, always sounds sweet). */
+private val COMBO_NOTES = floatArrayOf(1f, 1.1225f, 1.2599f, 1.4983f, 1.6818f, 2f)
+private const val ROAD_MS = 950f
+/** Grid intro timing (ms): each cell starts INTRO_STEP later per diagonal, lives INTRO_CELL; the tray slides in at INTRO_TRAY. */
+const val INTRO_STEP = 34
+const val INTRO_CELL = 430
+const val INTRO_MS = 14 * INTRO_STEP + INTRO_CELL
+const val INTRO_TRAY = 420L
+fun introDelay(r: Int, c: Int) = (r + c) * INTRO_STEP
+private const val AD_EVERY = 5
+
+private val HYPE_VOICES = listOf(Sfx.EXCELLENT, Sfx.AMAZING, Sfx.CRAZY, Sfx.INSANE)
+private val HYPE_WORDS = listOf("Excellent!", "Amazing!", "Crazy!", "Insane!")

@@ -19,7 +19,9 @@ import kotlin.math.sin
 import kotlin.math.tanh
 import kotlin.random.Random
 
-enum class Sfx { PICK, PLACE, CLEAR, BIG, FLUSH, FANFARE, FAIL, HAMMER, WHOOSH, BOOM, LOSE, TAP, COIN }
+enum class Sfx { PICK, PLACE, CLEAR, BIG, FLUSH, FANFARE, FAIL, HAMMER, WHOOSH, BOOM, LOSE, TAP, COIN,
+    /** hype voices, one per level (recorded only) */
+    EXCELLENT, AMAZING, CRAZY, INSANE, LEVELUP, CHIME, SHIMMER }
 
 /**
  * Procedural sound effects: synthesized at first launch, cached as tiny WAVs and played
@@ -34,15 +36,31 @@ class SoundFx(ctx: Context) {
         )
         .build()
     private val ids = IntArray(Sfx.entries.size)
-    //                              PICK   PLACE  CLEAR  BIG    FLUSH  FANF   FAIL   HAMMER WHOOSH BOOM   LOSE   TAP    COIN
-    private val vol = floatArrayOf(0.30f, 0.65f, 0.70f, 0.70f, 0.70f, 0.70f, 0.45f, 0.80f, 0.45f, 0.90f, 0.65f, 0.40f, 0.35f)
+    //                              PICK   PLACE  CLEAR  BIG    FLUSH  FANF   FAIL   HAMMER WHOOSH BOOM   LOSE   TAP    COIN   (voices x4)
+    private val vol = floatArrayOf(0.55f, 0.65f, 0.70f, 0.70f, 0.70f, 0.70f, 0.45f, 0.80f, 0.45f, 0.90f, 0.55f, 0.40f, 0.35f, 0.95f, 0.95f, 0.95f, 0.95f, 0.9f, 0.6f, 0.45f)
     var muted = false
+
+    /** Recorded sounds (res/raw) that replace the synthesized ones. Sources and licenses: licenses/SOUNDS.md. */
+    private val recorded = mapOf(
+        Sfx.PICK to R.raw.sfx_pick,
+        Sfx.LOSE to R.raw.sfx_lose,
+        Sfx.WHOOSH to R.raw.sfx_whoosh,
+        Sfx.EXCELLENT to R.raw.voice_excellent,
+        Sfx.AMAZING to R.raw.voice_amazing,
+        Sfx.CRAZY to R.raw.voice_crazy,
+        Sfx.CLEAR to R.raw.sfx_clear,
+        Sfx.BIG to R.raw.sfx_big,
+        Sfx.FANFARE to R.raw.sfx_win,
+        Sfx.LEVELUP to R.raw.sfx_levelup,
+        Sfx.INSANE to R.raw.voice_insane,
+    )
 
     init {
         val dir = File(ctx.cacheDir, "sfx").apply { mkdirs() }
-        dir.listFiles()?.filter { !it.name.endsWith("_v4.wav") && !it.name.startsWith("music") }?.forEach { it.delete() }
+        dir.listFiles()?.filter { !it.name.endsWith("_v8.wav") && it.name != "music_v8.wav" }?.forEach { it.delete() }
         for (s in Sfx.entries) {
-            val f = File(dir, "${s.name.lowercase()}_v4.wav")
+            recorded[s]?.let { ids[s.ordinal] = pool.load(ctx, it, 1); continue }
+            val f = File(dir, "${s.name.lowercase()}_v8.wav")
             if (!f.exists()) writeWav(f, synth(s))
             ids[s.ordinal] = pool.load(f.path, 1)
         }
@@ -61,7 +79,7 @@ class SoundFx(ctx: Context) {
     private val main = Handler(Looper.getMainLooper())
 
     init {
-        val f = File(File(ctx.cacheDir, "sfx"), "music_v1.wav")
+        val f = File(File(ctx.cacheDir, "sfx"), "music_v8.wav")
         Thread {
             if (!f.exists()) writeWav(f, synthMusic())
             main.post {
@@ -69,7 +87,7 @@ class SoundFx(ctx: Context) {
                     setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
                     setDataSource(f.path)
                     isLooping = true
-                    setVolume(0.32f, 0.32f)
+                    setVolume(0.22f, 0.22f)
                     prepare()
                 }
                 applyMusic()
@@ -158,7 +176,7 @@ class SoundFx(ctx: Context) {
 
         fun FloatArray.driven(k: Double) = FloatArray(size) { drive(this[it].toDouble(), k).toFloat() }
 
-        const val C5 = 523.25; const val G5 = 783.99
+        const val C5 = 523.25; const val E5 = 659.25; const val G5 = 783.99
         const val C6 = 1046.5; const val D6 = 1174.66; const val E6 = 1318.5; const val FS6 = 1479.98
         const val G6 = 1568.0; const val GS6 = 1661.22; const val AS6 = 1864.66; const val C7 = 2093.0; const val E7 = 2637.02
         const val E4 = 329.63; const val F4 = 349.23; const val FS4 = 369.99; const val G4 = 392.0
@@ -187,17 +205,18 @@ class SoundFx(ctx: Context) {
             }
 
             // line clear: rising glassy pop + quick chime + crunchy shards
+            // line clear: a soft rising whoosh-ding (kept round: sines + triangles, a little air, gentle drive)
             Sfx.CLEAR -> mix(
-                osc(0.2, { _, p -> 520 + 1000 * (1 - (1 - p).pow(3)) }, ::sine) { t, _ -> 0.55 * exp(-t * 18) },
-                notes(listOf(C6 to 0.035, E6 to 0.035, G6 to 0.2), ::tri, 0.22, 11.0),
-                noise(0.12, 7, { t, _ -> 0.35 * exp(-t * 38) }, hp = true, lp = 0.7),
-            ).driven(1.8)
+                osc(0.2, { _, p -> 420 + 700 * (1 - (1 - p).pow(3)) }, ::sine) { t, _ -> 0.5 * exp(-t * 18) },
+                notes(listOf(C5 to 0.035, E5 to 0.035, G5 to 0.22), { tri(it) * 0.5 + sine(it) * 0.5 }, 0.24, 9.0),
+                noise(0.1, 7, { t, _ -> 0.16 * exp(-t * 40) }, hp = true, lp = 0.45),
+            ).driven(1.25)
 
             // multi-line: sparkling arpeggio up
             Sfx.BIG -> mix(
-                notes(listOf(C6 to 0.04, E6 to 0.04, G6 to 0.04, C7 to 0.04, E7 to 0.3), { square(it, 0.25) }, 0.2, 7.0, vib = true),
-                noise(0.3, 9, { _, p -> 0.18 * (1 - p) }, hp = true, lp = 0.5),
-            ).driven(1.4)
+                notes(listOf(C5 to 0.045, E5 to 0.045, G5 to 0.045, C6 to 0.045, E6 to 0.32), { tri(it) * 0.6 + sine(it) * 0.4 }, 0.22, 6.0, vib = true),
+                noise(0.25, 9, { _, p -> 0.07 * (1 - p) }, hp = true, lp = 0.35),
+            ).driven(1.15)
 
             // color flush: magical whole-tone run + bell
             Sfx.FLUSH -> mix(
@@ -207,9 +226,9 @@ class SoundFx(ctx: Context) {
 
             // all clear / new best fanfare
             Sfx.FANFARE -> mix(
-                notes(listOf(G5 to 0.09, C6 to 0.09, E6 to 0.09, G6 to 0.12, E6 to 0.09, G6 to 0.5), { square(it, 0.25) }, 0.22, 3.0, vib = true),
-                notes(listOf(C5 / 2 to 0.27, G4 to 0.21, C5 to 0.5), ::tri, 0.35, 2.5),
-            ).driven(1.4)
+                notes(listOf(G4 to 0.09, C5 to 0.09, E5 to 0.09, G5 to 0.12, E5 to 0.09, G5 to 0.5), { tri(it) * 0.6 + sine(it) * 0.4 }, 0.26, 3.0, vib = true),
+                notes(listOf(C5 / 4 to 0.27, G4 / 2 to 0.21, C5 / 2 to 0.5), ::tri, 0.35, 2.5),
+            ).driven(1.15)
 
             // bad drop: soft low thud
             Sfx.FAIL -> osc(0.14, { _, p -> 170 * 0.6.pow(p) }, ::tri) { t, _ -> 0.5 * exp(-t * 22) }
@@ -221,7 +240,7 @@ class SoundFx(ctx: Context) {
                 noise(0.06, 12, { t, _ -> 0.35 * exp(-t * 90) }, hp = true),
             ).driven(2.5)
 
-            // whoosh for rotate / shuffle
+            // whoosh when a fresh tray of pieces slides in (replaced by res/raw/sfx_whoosh)
             Sfx.WHOOSH -> mix(
                 noise(0.26, 13, { _, p -> 0.5 * sin(PI * p) }, lp = 0.12),
                 osc(0.26, { _, p -> 300 + 700 * p }, ::tri) { _, p -> 0.12 * sin(PI * p) },
@@ -243,6 +262,22 @@ class SoundFx(ctx: Context) {
             // coin landing in the counter: bright E6 -> B6 blip
             Sfx.COIN -> notes(listOf(E6 to 0.04, E6 * 1.5 to 0.14), { square(it, 0.25) }, 0.22, 16.0).driven(1.3)
 
+            // voices are recorded files only
+            Sfx.EXCELLENT, Sfx.AMAZING, Sfx.CRAZY, Sfx.INSANE, Sfx.LEVELUP -> FloatArray(1)
+
+            // combo note: a soft, pure bell at C6 (pitched up the pentatonic scale per combo step, so a streak plays a melody)
+            Sfx.CHIME -> mix(
+                osc(1.3, { _, _ -> C6 }, ::sine) { t, _ -> 0.55 * exp(-t * 3.0) * (t / 0.003).coerceAtMost(1.0) },
+                osc(1.0, { _, _ -> C6 * 2.0 }, ::sine) { t, _ -> 0.13 * exp(-t * 5.0) * (t / 0.003).coerceAtMost(1.0) },
+                osc(0.5, { _, _ -> C6 * 2.76 }, ::sine) { t, _ -> 0.07 * exp(-t * 10.0) * (t / 0.002).coerceAtMost(1.0) },
+            )
+
+            // combo x3+: a gentle sparkle run on top
+            Sfx.SHIMMER -> mix(
+                notes(listOf(E6 to 0.045, G6 to 0.045, C7 to 0.045, E6 * 2 to 0.35), ::sine, 0.32, 7.0),
+                noise(0.35, 13, { _, p -> 0.03 * (1 - p) }, hp = true, lp = 0.3),
+            )
+
             // UI tap
             Sfx.TAP -> mix(
                 osc(0.07, { _, p -> 980 - 560 * p }, ::sine) { _, p -> 0.6 * (1 - p).pow(2.5) },
@@ -251,42 +286,91 @@ class SoundFx(ctx: Context) {
         }
 
         /**
-         * Chill 8-bar loop at 96 bpm: C - Am - F - G twice. Soft triangle pad, round sine bass on beats 1 and 3,
-         * a gentle plucked arpeggio. Notes that ring past the end wrap to the start, so the loop is seamless.
+         * Calm piano loop: 16 bars at 72 bpm in C major (about 53 s), seamless.
+         * Left hand: a slow flowing arpeggio over a soft bass note. Right hand: a sparse, low, singing melody.
+         * Piano voice: a soft felt piano: few partials (dark, never shrill), a gentle 12 ms attack, two detuned
+         * strings on melody notes, and a soft three-tap room echo.
          */
         fun synthMusic(): FloatArray {
-            val beat = 60.0 / 96.0
+            val beat = 60.0 / 72.0
             val bar = 4 * beat
-            val out = FloatArray((8 * bar * SR).toInt())
-            fun add(start: Double, dur: Double, f: Double, amp: Double, atk: Double, dec: Double, wave: (Double) -> Double) {
+            val bars = 16
+            val out = FloatArray((bars * bar * SR).toInt())
+            fun hz(m: Int) = 440.0 * 2.0.pow((m - 69) / 12.0)
+
+            fun piano(start: Double, len: Double, m: Int, amp: Double, partials: Int, strings: Int) {
+                val f = hz(m)
                 val s0 = (start * SR).toInt()
-                val n = (dur * SR).toInt()
-                var ph = 0.0
-                for (i in 0 until n) {
-                    val t = i.toDouble() / SR
-                    ph += TAU * f / SR
-                    val env = (t / atk).coerceAtMost(1.0) * exp(-t * dec)
-                    val k = (s0 + i) % out.size
-                    out[k] += (wave(ph) * env * amp).toFloat()
+                val n = (minOf(len + 1.2, 4.5) * SR).toInt()
+                val rel = (len * SR).toInt()
+                val d1 = 0.7 + f / 900.0
+                for (st in 0 until strings) {
+                    val det = if (strings == 1) 1.0 else if (st == 0) 0.9997 else 1.0003
+                    for (k in 1..partials) {
+                        val fk = f * det * k * kotlin.math.sqrt(1 + 0.0003 * k * k)
+                        if (fk > 3800) break
+                        val ak = amp / strings / k.toDouble().pow(1.9)
+                        val dk = d1 * (1 + 0.6 * (k - 1))
+                        val w = TAU * fk / SR
+                        val cr = kotlin.math.cos(w); val sr = sin(w)
+                        var sv = 0.0; var cv = 1.0
+                        for (i in 0 until n) {
+                            val t = i.toDouble() / SR
+                            var env = exp(-t * dk) * (t / 0.012).coerceAtMost(1.0)
+                            if (i > rel) env *= exp(-(i - rel).toDouble() / SR * 4)  // key released, slow damper
+                            if (i > SR / 50 && env < 0.0003) break
+                            out[(s0 + i) % out.size] += (sv * env * ak).toFloat()
+                            val ns = sv * cr + cv * sr
+                            cv = cv * cr - sv * sr
+                            sv = ns
+                        }
+                    }
                 }
             }
+
+            // chords: root (MIDI), minor?  C Am F G | C Am F G | F Em Dm G | C Am F C
             val chords = listOf(
-                listOf(261.63, 329.63, 392.00) to 130.81, // C
-                listOf(220.00, 261.63, 329.63) to 110.00, // Am
-                listOf(174.61, 220.00, 261.63) to 87.31,  // F
-                listOf(196.00, 246.94, 293.66) to 98.00,  // G
+                48 to false, 45 to true, 41 to false, 43 to false, 48 to false, 45 to true, 41 to false, 43 to false,
+                41 to false, 40 to true, 50 to true, 43 to false, 48 to false, 45 to true, 41 to false, 48 to false,
             )
-            val arp = intArrayOf(0, 1, 2, 1, 0, 2, 1, 2)
-            for (b in 0 until 8) {
-                val (tones, root) = chords[b % 4]
+            // left hand: soft bass on beat 1, then a slow rolling arpeggio in eighths (root, fifth, octave, third, fifth...)
+            for ((b, ch) in chords.withIndex()) {
+                val (r, minor) = ch
+                val third = if (minor) 15 else 16
                 val t0 = b * bar
-                tones.forEach { add(t0, bar + 0.6, it, 0.045, 0.35, 0.5, ::tri) }
-                add(t0, beat * 1.8, root, 0.2, 0.01, 2.2, ::sine)
-                add(t0 + 2 * beat, beat * 1.8, root, 0.16, 0.01, 2.2, ::sine)
-                for (i in 0 until 8) {
-                    val f = tones[arp[i]] * 2
-                    add(t0 + i * beat / 2, 0.7, f, 0.07, 0.004, 5.5) { sine(it) * 0.8 + tri(it) * 0.2 }
-                }
+                piano(t0, bar * 0.95, r - 12, 0.085, 3, 1)
+                val arp = listOf(0, 7, 12, third, 19, third, 12, 7)
+                for ((i, iv) in arp.withIndex()) piano(t0 + i * beat / 2, beat * 1.4, r + iv, 0.042, 3, 1)
+            }
+
+            // melody: bar to list of (start beat, beats, MIDI); sparse and singing, held long
+            val mel = mapOf(
+                0 to listOf(Triple(0.0, 2.0, 76), Triple(2.0, 2.0, 74)),
+                1 to listOf(Triple(0.0, 3.0, 72), Triple(3.0, 1.0, 71)),
+                2 to listOf(Triple(0.0, 2.0, 69), Triple(2.0, 2.0, 72)),
+                3 to listOf(Triple(0.0, 4.0, 74)),
+                4 to listOf(Triple(0.0, 1.5, 76), Triple(1.5, 0.5, 79), Triple(2.0, 2.0, 76)),
+                5 to listOf(Triple(0.0, 2.0, 72), Triple(2.0, 2.0, 76)),
+                6 to listOf(Triple(0.0, 2.0, 77), Triple(2.0, 1.0, 76), Triple(3.0, 1.0, 72)),
+                7 to listOf(Triple(0.0, 4.0, 74)),
+                8 to listOf(Triple(0.0, 2.0, 81), Triple(2.0, 2.0, 79)),
+                9 to listOf(Triple(0.0, 2.0, 79), Triple(2.0, 2.0, 76)),
+                10 to listOf(Triple(0.0, 2.0, 77), Triple(2.0, 2.0, 74)),
+                11 to listOf(Triple(0.0, 3.0, 74), Triple(3.0, 1.0, 71)),
+                12 to listOf(Triple(0.0, 2.0, 72), Triple(2.0, 2.0, 76)),
+                13 to listOf(Triple(0.0, 2.0, 79), Triple(2.0, 2.0, 76)),
+                14 to listOf(Triple(0.0, 2.0, 74), Triple(2.0, 2.0, 72)),
+                15 to listOf(Triple(0.0, 4.0, 72)),
+            )
+            for ((b, notes) in mel) for ((st, len, m) in notes) {
+                piano(b * bar + st * beat, len * beat * 0.95, m, 0.12, 4, 2)
+            }
+
+            // soft room: three echo taps, wrapped so the loop stays seamless
+            val dry = out.copyOf()
+            for ((delay, g) in listOf(0.21 to 0.18, 0.37 to 0.11, 0.59 to 0.06)) {
+                val d = (delay * SR).toInt()
+                for (i in dry.indices) out[(i + d) % out.size] += dry[i] * g.toFloat()
             }
             return out
         }

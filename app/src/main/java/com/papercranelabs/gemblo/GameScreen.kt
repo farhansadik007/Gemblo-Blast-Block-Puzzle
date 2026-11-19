@@ -1,5 +1,6 @@
 package com.papercranelabs.gemblo
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateDpAsState
@@ -23,6 +24,26 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.res.imageResource
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -57,6 +78,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.StrokeCap
@@ -99,6 +122,7 @@ import com.papercranelabs.gemblo.game.Cell
 import com.papercranelabs.gemblo.game.N
 import com.papercranelabs.gemblo.game.Piece
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.pow
 import kotlin.math.roundToInt
@@ -146,9 +170,13 @@ fun GameScreen(ui: GameUi, ads: AdManager) {
         while (true) withFrameNanos { ui.tick(it / 1_000_000) }
     }
     val bg by animateColorAsState(Pal.bg, tween(500), label = "bg")
-    Box(Modifier.fillMaxSize().background(bg).then(if (ui.screen == Screen.Home) Modifier.grain() else Modifier)) {
+    val activity = LocalContext.current as? android.app.Activity
+    BackHandler { if (!ui.back()) activity?.finish() }
+    Box(Modifier.fillMaxSize().background(bg).then(if (ui.screen != Screen.Game) Modifier.grain() else Modifier)) {
       if (ui.screen == Screen.Home) {
         HomeScreen(ui)
+      } else if (ui.screen == Screen.Journey) {
+        JourneyMap(ui)
       } else {
       Column(Modifier.fillMaxSize().safeDrawingPadding()) {
         Column(
@@ -157,6 +185,7 @@ fun GameScreen(ui: GameUi, ads: AdManager) {
         ) {
             TopBar(ui)
             Spacer(Modifier.height(10.dp))
+            if (ui.mode == Mode.Journey) TargetBar(ui)
             // combo "fever": 0 = calm, 1 = full dance (fades in/out smoothly)
             val fever by animateFloatAsState(
                 if (ui.combo >= 2) (0.55f + 0.15f * (ui.combo - 2)).coerceAtMost(1f) else 0f,
@@ -165,6 +194,7 @@ fun GameScreen(ui: GameUi, ads: AdManager) {
             // fixed-size stage: the aura's center never moves when the score gains digits
             Box(Modifier.fillMaxWidth().height(72.dp), contentAlignment = Alignment.Center) {
                 if (fever > 0.01f) ComboAura(ui, fever, Modifier.matchParentSize())
+                val glow = ui.countGlow
                 FixedDigits(
                     fmt(ui.displayScore.roundToInt()),
                     modifier = Modifier
@@ -174,18 +204,20 @@ fun GameScreen(ui: GameUi, ads: AdManager) {
                             // gentle dance while a combo is alive: every motion is a smooth wave (no cusps)
                             val beat = ui.now / 1000f * 2 * PI.toFloat() * 1.1f
                             val wave = 0.5f - 0.5f * cos(beat * 2)              // 0..1, smooth at both ends
-                            val s = 1f + 0.2f * (1f - t) * (1f - t) + 0.035f * fever * wave
+                            val s = 1f + 0.2f * (1f - t) * (1f - t) + 0.035f * fever * wave + 0.14f * glow
                             scaleX = s; scaleY = s
-                            rotationZ = 3f * fever * sin(beat)
+                            // while a big gain counts: a quick excited wiggle
+                            rotationZ = 3f * fever * sin(beat) + 2.5f * glow * sin(ui.now / 38f)
                             translationY = -4.dp.toPx() * fever * wave
                         },
                     style = TextStyle(textMotion = TextMotion.Animated, fontFeatureSettings = "tnum",
-                        fontFamily = Fredoka, fontWeight = FontWeight.Bold, fontSize = 54.sp, color = Pal.text,
-                        shadow = Shadow(Pal.scoreShadow, Offset(0f, 7f), 0f),
+                        fontFamily = Fredoka, fontWeight = FontWeight.Bold, fontSize = 54.sp, color = lerp(Pal.text, Color(0xFFFFD54A), glow),
+                        shadow = Shadow(lerp(Pal.scoreShadow, Color(0xFFB0600A), glow), Offset(0f, 7f), 0f),
                     ),
                 )
             }
             ComboLine(ui)
+            Spacer(Modifier.height(12.dp))   // keeps the combo fuse clear of the grid (and its combo border glow)
             // less space above the board than below: the grid sits at the screen's center, nudged up
             Spacer(Modifier.weight(0.2f))
             Canvas(
@@ -200,7 +232,7 @@ fun GameScreen(ui: GameUi, ads: AdManager) {
                             val m = ui.metrics ?: return@awaitEachGesture
                             val x = down.position.x
                             val y = down.position.y
-                            if (ui.stuckAt >= 0) return@awaitEachGesture
+                            if (ui.stuckAt >= 0 || ui.levelDone) return@awaitEachGesture
                             val slot = m.hitSlot(x, y) ?: return@awaitEachGesture
                             if (ui.game.tray[slot] == null) return@awaitEachGesture
                             ui.startDrag(slot, x, y)
@@ -224,8 +256,26 @@ fun GameScreen(ui: GameUi, ads: AdManager) {
       }
         FxLayer(ui, tm)
         if (ui.gameOverVisible) GameOver(ui)
+        if (ui.levelDoneVisible) LevelDone(ui)
       }
         if (ui.showSettings) Settings(ui)
+        if (ui.showOffer) NoAdsOffer(ui)
+        if (ui.showPremium) PremiumInfo(ui)
+        if (ui.showAlbum) AlbumScreen(ui)
+        if (ui.albumView >= 0) PictureViewer(ui)
+        if (ui.showSplash) BrandSplash { ui.showSplash = false }
+        // "Press back again to exit" (Home)
+        val hint = ((ui.now - ui.exitHintAt) / 2000f)
+        if (ui.screen == Screen.Home && hint in 0f..1f) {
+            Box(Modifier.fillMaxSize().safeDrawingPadding().padding(bottom = 6.dp), contentAlignment = Alignment.BottomCenter) {
+                BasicText(
+                    "Press back again to exit",
+                    modifier = Modifier.graphicsLayer { alpha = ((1f - hint) * 5f).coerceIn(0f, 1f) }
+                        .clip(RoundedCornerShape(50)).background(Color(0xE61A1030)).padding(horizontal = 20.dp, vertical = 12.dp),
+                    style = label(16, Color.White, FontWeight.SemiBold),
+                )
+            }
+        }
     }
 }
 
@@ -554,6 +604,64 @@ private fun DrawScope.insetRim(m: Metrics) {
 
 // ---------------------------------------------------------------- the board
 
+private val RAINBOW = listOf(
+    Color(0xFFFF4D5E), Color(0xFFFF9F3D), Color(0xFFFFE04D), Color(0xFF4DE07A),
+    Color(0xFF3DC8FF), Color(0xFF8A6CFF), Color(0xFFFF5FD0), Color(0xFFFF4D5E),
+)
+
+/** A point on the grid border, [u] 0..1 clockwise from the top-left corner. */
+private fun borderPoint(l: Float, t: Float, s: Float, u: Float): Offset {
+    val q = (u % 1f + 1f) % 1f * 4f
+    return when {
+        q < 1f -> Offset(l + s * q, t)
+        q < 2f -> Offset(l + s, t + s * (q - 1f))
+        q < 3f -> Offset(l + s * (3f - q), t + s)
+        else -> Offset(l, t + s * (4f - q))
+    }
+}
+
+/**
+ * Combo border: while a combo is alive the grid's border is a flowing rainbow with rainbow comets racing around it
+ * (a single big clear lights it too, for a moment).
+ * Every clear flashes it brighter.
+ */
+private fun DrawScope.comboBorder(ui: GameUi, m: Metrics) {
+    val now = ui.now
+    val flash = (1f - (now - ui.clearAt) / 520f).coerceIn(0f, 1f)
+    val k = (ui.borderGlow + 0.7f * flash * flash).coerceAtMost(1.2f)
+    if (k < 0.02f) return
+    val d = density
+    val out = 3f * d
+    val l = m.gridLeft - out
+    val side = m.gridSize + 2 * out
+    val corner = CornerRadius(8f * d)
+    val pulse = 0.82f + 0.18f * sin(now / 170f)
+    val rb = ui.borderRainbow
+    val phase = (now / 1000f * 240f * d)
+    val rainbow = Brush.linearGradient(RAINBOW, start = Offset(l + phase, l), end = Offset(l + phase + side, l + side), tileMode = TileMode.Repeated)
+    val gold = Brush.linearGradient(listOf(Color(0xFFFFE27A), Color(0xFFFFB020), Color(0xFFFFF3B0), Color(0xFFFFB020)),
+        start = Offset(l + phase * 0.5f, l), end = Offset(l + phase * 0.5f + side, l + side), tileMode = TileMode.Mirror)
+    // soft outer glow layers, then the bright core line
+    for (i in 3 downTo 0) {
+        val w = (2.5f + i * 5f) * d
+        val a = (if (i == 0) 1f else 0.16f) * k * pulse
+        if (rb < 0.99f) drawRoundRect(gold, Offset(l, l), Size(side, side), corner, alpha = (a * (1f - rb)).coerceIn(0f, 1f), style = Stroke(w), blendMode = BlendMode.Plus)
+        if (rb > 0.01f) drawRoundRect(rainbow, Offset(l, l), Size(side, side), corner, alpha = (a * rb).coerceIn(0f, 1f), style = Stroke(w), blendMode = BlendMode.Plus)
+    }
+    // comets racing around the border
+    if (k > 0.3f) {
+        val speed = 0.35f + 0.35f * rb
+        for (j in 0..1) {
+            val u = now / 1000f * speed + j * 0.5f
+            for (tail in 0 until 6) {
+                val pt = borderPoint(l, l, side, u - tail * 0.008f)
+                val col = if (rb > 0.5f) RAINBOW[(tail + j * 3) % RAINBOW.size] else Color(0xFFFFF3B0)
+                drawCircle(col, (5f - tail * 0.6f) * d, pt, alpha = (k * (1f - tail / 6f)).coerceIn(0f, 1f), blendMode = BlendMode.Plus)
+            }
+        }
+    }
+}
+
 fun DrawScope.drawGame(ui: GameUi, tm: TextMeasurer) {
     val m = ui.metrics ?: return
     val st = (ui.now - ui.shakeAt) / 380f
@@ -593,7 +701,8 @@ private fun DrawScope.drawGameInner(ui: GameUi, m: Metrics, tm: TextMeasurer) {
     val deadRows = if (ui.stuckAt >= 0) (((now - ui.stuckAt) / 650f) * (N + 1)).toInt() else 0
 
     // pass 1: empty tiles, then the board's inner shadow (so it sinks the tray but never dims the blocks)
-    for (r in 0 until N) for (c in 0 until N) if (g[r, c] == 0) emptyCell(m.cellX(c), m.cellY(r), m.cell)
+    // (a block still waiting for its intro pop shows as an empty tile)
+    for (r in 0 until N) for (c in 0 until N) if (g[r, c] == 0 || now < ui.bornAt[r * N + c]) emptyCell(m.cellX(c), m.cellY(r), m.cell)
     innerShadow(m)
 
     // pass 2: blocks, ghost, highlights
@@ -604,7 +713,7 @@ private fun DrawScope.drawGameInner(ui: GameUi, m: Metrics, tm: TextMeasurer) {
         val hl = r in hlRows || c in hlCols
         if (k == 0) {
             if (Cell(r, c) in ghost) block(x, y, m.cell, ghostColor, alpha = if (hl) 1f else 0.4f)
-        } else {
+        } else if (now >= ui.bornAt[r * N + c]) {
             val t = ((now - ui.bornAt[r * N + c]) / 200f).coerceIn(0f, 1f)
             val s = 0.84f + 0.16f * easeOutBack(t)
             val off = m.cell * (1 - s) / 2
@@ -618,6 +727,25 @@ private fun DrawScope.drawGameInner(ui: GameUi, m: Metrics, tm: TextMeasurer) {
         }
         if (hl) drawRect(lerp(ghostColor, Color.White, 0.35f), Offset(x, y), Size(m.cell, m.cell), alpha = 0.14f + 0.1f * sin(now / 70f))
     }
+    // grid intro: a diagonal rainbow wave of blocks pops through every cell, flashes, and shrinks away
+    if (now - ui.introAt < INTRO_MS) for (r in 0 until N) for (c in 0 until N) {
+        val p = (now - ui.introAt - introDelay(r, c)) / INTRO_CELL.toFloat()
+        if (p !in 0f..1f) continue
+        val s = when {
+            p < 0.35f -> easeOutBack(p / 0.35f)
+            p > 0.62f -> 1f - (p - 0.62f) / 0.38f
+            else -> 1f
+        }.coerceAtLeast(0f)
+        if (s <= 0.01f) continue
+        val sz = m.cell * s
+        val off = (m.cell - sz) / 2
+        val x = m.cellX(c) + off
+        val y = m.cellY(r) + off
+        block(x, y, sz, Pal.block(1 + (r + c) % 5), alpha = if (p > 0.62f) s else 1f)
+        val flash = (1f - abs(p - 0.42f) / 0.2f).coerceIn(0f, 1f)
+        if (flash > 0f) drawRect(Color.White, Offset(x, y), Size(sz, sz), alpha = 0.55f * flash)
+    }
+    comboBorder(ui, m)
     hlRows.forEach { lineHighlight(m, true, it, ghostColor, now) }
     hlCols.forEach { lineHighlight(m, false, it, ghostColor, now) }
 
@@ -788,34 +916,166 @@ private val styleBest get() = TextStyle(textMotion = TextMotion.Animated,
 )
 
 @Composable
-private fun RoundIconButton(icon: IconSpec, desc: String, onClick: () -> Unit) {
+private fun RoundIconButton(icon: IconSpec?, desc: String, bg: Color = Pal.pill, tint: Color = Pal.text, image: Int? = null, onClick: () -> Unit) {
     Box(
-        Modifier.size(46.dp).clip(RoundedCornerShape(15.dp)).background(Pal.pill)
+        Modifier.size(46.dp).clip(RoundedCornerShape(15.dp)).background(bg)
             .juicy(onClick = onClick).semantics { contentDescription = desc },
         contentAlignment = Alignment.Center,
-    ) { Icon24(icon, Pal.text, 24.dp) }
-}
-
-/** Top bar: trophy + best score on the left, settings on the right. Nothing else. */
-@Composable
-private fun TopBar(ui: GameUi) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Trophy(30.dp)
-            BasicText(fmt(ui.best), style = styleBest)
-        }
-        RoundIconButton(Icons.settings, "Settings") { ui.sfx(Sfx.TAP); ui.showSettings = true }
+    ) {
+        if (image != null) Image(painterResource(image), null, Modifier.size(28.dp), colorFilter = ColorFilter.tint(tint))
+        else if (icon != null) Icon24(icon, tint, 24.dp)
     }
 }
 
+private val PremiumGold = Color(0xFFFFC93C)
+
+/** A light sweep across a candy face (p = 0..1 across), clipped to the face. */
+private fun DrawScope.faceSweep(p: Float, edgeDp: Float, faceHDp: Float, rDp: Float) {
+    if (p !in 0f..1f) return
+    val d = density
+    val fx = edgeDp * d; val fw = size.width - 2 * fx; val fh = faceHDp * d
+    clipPath(Path().apply { addRoundRect(RoundRect(fx, fx, fx + fw, fx + fh, CornerRadius((rDp - edgeDp) * d))) }) {
+        val cx = fx - 30f * d + p * (fw + 60f * d)
+        drawRect(
+            Brush.linearGradient(
+                0f to Color.Transparent, 0.5f to Color.White.copy(alpha = 0.6f), 1f to Color.Transparent,
+                start = Offset(cx - 14f * d, fx), end = Offset(cx + 6f * d, fx + fh),
+            ),
+            Offset(fx, fx), Size(fw, fh),
+        )
+    }
+}
+
+/** A twinkling, slowly turning four-point sparkle. */
+@Composable
+private fun Sparkle(ui: GameUi, modifier: Modifier, phase: Float = 0f) {
+    Canvas(modifier.size(18.dp)) {
+        val t = ui.now / 1000f + phase
+        val k = (0.5f + 0.5f * sin(t * 3.2f)).coerceIn(0f, 1f)
+        val r = size.width / 2 * (0.55f + 0.45f * k)
+        val c = center
+        val star = Path().apply {
+            moveTo(c.x, c.y - r)
+            quadraticTo(c.x, c.y, c.x + r, c.y)
+            quadraticTo(c.x, c.y, c.x, c.y + r)
+            quadraticTo(c.x, c.y, c.x - r, c.y)
+            quadraticTo(c.x, c.y, c.x, c.y - r)
+            close()
+        }
+        rotate(t * 40f, c) { drawPath(star, Color(0xFFFFE27A), alpha = 0.6f + 0.4f * k) }
+    }
+}
+
+/**
+ * Small candy button for the Home top bar (No Ads, Premium crown): candy face, a light sweep every 4 s,
+ * a twinkling sparkle on the corner, and (wiggle = true) a little shake to catch the eye.
+ */
+@Composable
+private fun ShinyTopButton(
+    ui: GameUi, color: Color, image: Int?, desc: String, wiggle: Boolean,
+    icon: IconSpec? = null, sparkle: Boolean = true, onClick: () -> Unit,
+) {
+    val cycle = (ui.now / 1000f) % 4f
+    val wig = if (wiggle && cycle < 0.7f) sin(cycle * 28f) * (1f - cycle / 0.7f) else 0f
+    Box(
+        Modifier.size(width = 52.dp, height = 58.dp)
+            .graphicsLayer { rotationZ = wig * 9f; val k = 1f + abs(wig) * 0.06f; scaleX = k; scaleY = k }
+            .juicy(onClick = onClick).semantics { contentDescription = desc },
+    ) {
+        Canvas(Modifier.matchParentSize()) {
+            candy(color, 2.5f, 46f, 6f, 16f)
+            if (sparkle) faceSweep((cycle - 0.5f) / 0.55f, 2.5f, 46f, 16f)
+        }
+        Box(Modifier.padding(top = 2.5.dp).size(width = 52.dp, height = 46.dp), contentAlignment = Alignment.Center) {
+            if (image != null) Image(painterResource(image), null, Modifier.size(30.dp), colorFilter = ColorFilter.tint(Color.White))
+            else if (icon != null) Icon24(icon, Color.White, 28.dp)
+        }
+        if (sparkle) Sparkle(ui, Modifier.align(Alignment.TopEnd).offset(x = 5.dp, y = (-5).dp))
+    }
+}
+
+/** Premium player's mark on Home: a gold candy crown button (no wiggle: nothing to sell). Opens "You're Premium!". */
+@Composable
+private fun PremiumMark(ui: GameUi) = ShinyTopButton(ui, Color(0xFFF2A516), R.drawable.ic_premium, "Premium: no ads", wiggle = false) { ui.openPremium() }
+
+/** Top bar: trophy + best score on the left, settings on the right (plus, on Home, No Ads or the Premium crown). */
+@Composable
+private fun TopBar(ui: GameUi, home: Boolean = false) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (!home && ui.mode == Mode.Journey) {
+                BasicText("Level ${ui.playingLevel}", style = styleBest)
+            } else {
+                Trophy(30.dp)
+                BasicText(fmt(ui.best), style = styleBest)
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (home) {
+                if (ui.noAds) PremiumMark(ui) else ShinyTopButton(ui, Color(0xFFFF8A3D), R.drawable.ic_no_ads, "No Ads", wiggle = true, sparkle = false) { ui.openOffer() }
+            }
+            ShinyTopButton(ui, Color(0xFF8A6CFF), null, "Settings", wiggle = false, icon = Icons.settings, sparkle = false) {
+                ui.sfx(Sfx.TAP); ui.showSettings = true
+            }
+        }
+    }
+}
+
+/**
+ * Combo fuse: a candy pill whose golden fill is the combo's life. You have 3 moves to land another clear;
+ * each move without one drains a segment. On the last move the fuse turns red, throbs and shakes
+ * ("LAST MOVE"). The pill pops every time the combo grows; a light sweep runs along the fill.
+ */
 @Composable
 private fun ComboLine(ui: GameUi) {
-    Box(Modifier.height(30.dp), contentAlignment = Alignment.Center) {
-        if (ui.combo >= 2) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-            BasicText("Combo ×${ui.combo}", style = label(18, Pal.block(2), FontWeight.Bold).copy(shadow = Shadow(Color.Black, Offset(0f, 3f), 2f)))
-            repeat(3) { i ->
-                Box(Modifier.size(9.dp).clip(CircleShape).background(if (i < ui.movesLeft) Pal.block(2) else Pal.pill))
+    Box(Modifier.height(32.dp).fillMaxWidth(), contentAlignment = Alignment.Center) {
+        if (ui.combo < 2) return@Box
+        val life by animateFloatAsState(ui.movesLeft / 3f, tween(380), label = "fuse")
+        val danger = ui.movesLeft <= 1
+        val pop = remember { Animatable(1f) }
+        LaunchedEffect(ui.combo) {
+            pop.snapTo(1.4f)
+            pop.animateTo(1f, spring(dampingRatio = 0.45f, stiffness = 500f))
+        }
+        val t = ui.now / 1000f
+        val throb = if (danger) 0.5f + 0.5f * sin(t * 9f) else 0f
+        Box(
+            Modifier.size(196.dp, 29.dp).graphicsLayer {
+                val k = pop.value * (1f + 0.05f * throb)
+                scaleX = k; scaleY = k
+                translationX = if (danger) 2.dp.toPx() * sin(t * 38f) * throb else 0f
+            },
+            contentAlignment = Alignment.Center,
+        ) {
+            Canvas(Modifier.matchParentSize()) {
+                val e = 2.5.dp.toPx()
+                val h = size.height - 2 * e
+                val inner = size.width - 2 * e
+                drawRoundRect(Color(0xFF2A1B3D), cornerRadius = CornerRadius(size.height / 2))
+                drawRoundRect(Color(0xFF1A1030), Offset(e, e), Size(inner, h), CornerRadius(h / 2))
+                val fw = inner * life
+                if (fw > 1f) {
+                    val fill = if (danger) listOf(lerp(Color(0xFFFF8A8A), Color(0xFFFF4D5E), throb), Color(0xFFC81E3A))
+                               else listOf(Color(0xFFFFE680), Color(0xFFFFB52E), Color(0xFFFF8A1C))
+                    clipPath(Path().apply { addRoundRect(RoundRect(e, e, e + inner, e + h, CornerRadius(h / 2))) }) {
+                        drawRect(Brush.verticalGradient(fill, startY = e, endY = e + h), Offset(e, e), Size(fw, h))
+                        val sweep = 40.dp.toPx()
+                        val sx = e - sweep + ((t * 0.55f) % 1f) * (inner + 2 * sweep)
+                        clipRect(e, e, e + fw, e + h) {
+                            drawRect(
+                                Brush.horizontalGradient(listOf(Color.Transparent, Color.White.copy(alpha = 0.45f), Color.Transparent), startX = sx - sweep / 2, endX = sx + sweep / 2),
+                                Offset(e, e), Size(fw, h),
+                            )
+                        }
+                        drawRect(Color.White.copy(alpha = 0.25f), Offset(e, e), Size(fw, h * 0.42f))
+                    }
+                }
+                for (i in 1..2) {
+                    val x = e + inner * i / 3f
+                    drawLine(Color(0xFF2A1B3D).copy(alpha = 0.6f), Offset(x, e), Offset(x, e + h), 2.dp.toPx())
+                }
             }
+            CandyText(if (danger) "LAST MOVE  ×${ui.combo}" else "COMBO ×${ui.combo}", 16, Color(0xFF2A1B3D), 3.5f)
         }
     }
 }
@@ -868,7 +1128,7 @@ private fun ChunkyCard(content: @Composable () -> Unit) {
  * outlined text with a drop shadow. Squashes on press (juicy).
  */
 @Composable
-private fun BigButton(text: String, color: Color, icon: IconSpec?, modifier: Modifier = Modifier, chip: String? = null, onClick: () -> Unit) {
+private fun BigButton(text: String, color: Color, icon: IconSpec?, modifier: Modifier = Modifier, chip: String? = null, chipColor: Color? = null, image: Int? = null, onClick: () -> Unit) {
     val shine by rememberInfiniteTransition(label = "shine").animateFloat(
         0f, 1f, infiniteRepeatable(tween(3400, easing = LinearEasing)), label = "shine",
     )
@@ -932,7 +1192,10 @@ private fun BigButton(text: String, color: Color, icon: IconSpec?, modifier: Mod
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (icon != null) { Icon24(icon, Color.White, 24.dp); Spacer(Modifier.width(10.dp)) }
+            if (image != null) {
+                Image(painterResource(image), null, Modifier.size(28.dp), colorFilter = ColorFilter.tint(Color.White))
+                Spacer(Modifier.width(10.dp))
+            } else if (icon != null) { Icon24(icon, Color.White, 24.dp); Spacer(Modifier.width(10.dp)) }
             Box {
                 val base = label(24, Color.White, FontWeight.Bold)
                 BasicText(text, style = base.copy(color = dark, drawStyle = Stroke(width = 5f * LocalDensity.current.density, join = StrokeJoin.Round)))
@@ -941,51 +1204,13 @@ private fun BigButton(text: String, color: Color, icon: IconSpec?, modifier: Mod
             if (chip != null) {
                 Spacer(Modifier.width(10.dp))
                 Box(
-                    Modifier.clip(RoundedCornerShape(9.dp)).background(dark.copy(alpha = 0.55f))
+                    Modifier.clip(RoundedCornerShape(9.dp)).background(chipColor ?: dark.copy(alpha = 0.55f))
                         .padding(horizontal = 8.dp, vertical = 3.dp),
                 ) {
                     BasicText(chip, style = label(13, Color.White, FontWeight.Bold))
                 }
             }
         }
-    }
-}
-
-/** Cute block buddy: blinks, bobs, smiles when happy, frowns (with a tear) when sad. */
-@Composable
-private fun Mascot(ui: GameUi, happy: Boolean, color: Color, sizeDp: Dp) {
-    val ink = Color(0xFF2A1B3D)
-    Canvas(Modifier.size(sizeDp)) {
-        val t = ui.now / 1000f
-        val s = size.width * 0.74f
-        val bob = sin(t * 3.2f) * size.width * 0.035f
-        val x = (size.width - s) / 2
-        val y = (size.height - s) / 2 - size.width * 0.04f + bob
-        drawOval(Color.Black, Offset(x + s * 0.12f, size.height * 0.88f), Size(s * 0.76f, s * 0.1f), alpha = 0.18f)
-        block(x, y, s, color)
-        val blink = (t % 3.2f) > 3.05f
-        val ey = y + s * 0.42f
-        for (ex in listOf(x + s * 0.34f, x + s * 0.66f)) {
-            if (blink) drawLine(ink, Offset(ex - s * 0.07f, ey), Offset(ex + s * 0.07f, ey), s * 0.045f, StrokeCap.Round)
-            else {
-                drawCircle(Color.White, s * 0.1f, Offset(ex, ey))
-                drawCircle(ink, s * 0.056f, Offset(ex, ey + (if (happy) -0.01f else 0.02f) * s))
-                drawCircle(Color.White, s * 0.02f, Offset(ex + s * 0.022f, ey - s * 0.012f))
-            }
-        }
-        drawCircle(Color(0xFFFF8FA3), s * 0.065f, Offset(x + s * 0.2f, y + s * 0.6f), alpha = 0.55f)
-        drawCircle(Color(0xFFFF8FA3), s * 0.065f, Offset(x + s * 0.8f, y + s * 0.6f), alpha = 0.55f)
-        val mouth = Path()
-        if (happy) {
-            mouth.moveTo(x + s * 0.38f, y + s * 0.62f)
-            mouth.quadraticTo(x + s * 0.5f, y + s * 0.76f, x + s * 0.62f, y + s * 0.62f)
-        } else {
-            mouth.moveTo(x + s * 0.4f, y + s * 0.71f)
-            mouth.quadraticTo(x + s * 0.5f, y + s * 0.6f, x + s * 0.6f, y + s * 0.71f)
-            val tear = ((t * 0.9f) % 1f)
-            drawCircle(Color(0xFF7FD3FF), s * 0.04f, Offset(x + s * 0.27f, ey + s * 0.1f + tear * s * 0.25f), alpha = 1f - tear)
-        }
-        drawPath(mouth, ink, style = Stroke(s * 0.05f, cap = StrokeCap.Round))
     }
 }
 
@@ -1007,6 +1232,28 @@ private fun RainBlocks(ui: GameUi) {
     }
 }
 
+/**
+ * Goldie on the end-of-game popup: happy art for a new best (little hops), sad art
+ * (design/mascot_sad_source.jpg, cut out) for "Out of space!" (slow droopy sway).
+ */
+@Composable
+private fun PopupMascot(ui: GameUi, happy: Boolean) {
+    Image(
+        painterResource(if (happy) R.drawable.mascot else R.drawable.mascot_sad),
+        contentDescription = if (happy) "Gemblo cheering" else "Gemblo looking sad",
+        modifier = Modifier.size(118.dp).graphicsLayer {
+            val t = ui.now / 1000f
+            if (happy) {
+                translationY = -8.dp.toPx() * abs(sin(t * 4f))
+                rotationZ = 4f * sin(t * 2f)
+            } else {
+                translationY = 3.dp.toPx() * sin(t * 1.3f)
+                rotationZ = -3f + 2.5f * sin(t * 0.9f)
+            }
+        },
+    )
+}
+
 @Composable
 private fun GameOver(ui: GameUi) {
     val g = ui.game
@@ -1014,16 +1261,22 @@ private fun GameOver(ui: GameUi) {
         RainBlocks(ui)
         PopIn {
             ChunkyCard {
-                Mascot(ui, happy = ui.beatBest, color = Pal.block(if (ui.beatBest) 2 else 4), sizeDp = 100.dp)
+                PopupMascot(ui, happy = ui.beatBest)
                 BasicText(if (ui.beatBest) "New Best!" else "Out of space!", style = label(30, Pal.ink, FontWeight.Bold))
                 BasicText(fmt(g.score), style = label(58, Pal.ink, FontWeight.Bold))
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (ui.mode == Mode.Journey) {
+                    BasicText("Level ${ui.playingLevel}  ·  target ${fmt(ui.target)}", style = label(18, Pal.inkMuted, FontWeight.SemiBold))
+                } else Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Trophy(22.dp)
                     BasicText(fmt(ui.best), style = label(20, Pal.inkMuted, FontWeight.SemiBold))
                 }
                 Spacer(Modifier.height(2.dp))
-                if (!g.usedBlast) BigButton("Revive", Color(0xFF3FBF6E), Icons.play, chip = "AD") { ui.revive() }
-                BigButton("Play again", Color(0xFF3D8BFF), Icons.replay) { ui.replay() }
+                // free players: video icon + "AD" (a rewarded video first); Premium: a gold "+1", instant
+                if (!g.usedBlast) {
+                    if (ui.noAds) BigButton("Revive", Color(0xFF3FBF6E), Icons.playSolid, chip = "+1", chipColor = Color(0xFFF2A516)) { ui.reviveTapped() }
+                    else BigButton("Revive", Color(0xFF3FBF6E), Icons.play, chip = "AD") { ui.reviveTapped() }
+                }
+                BigButton(if (ui.mode == Mode.Journey) "Try again" else "Play again", Color(0xFF3D8BFF), Icons.replay) { ui.replay() }
             }
         }
     }
@@ -1031,7 +1284,76 @@ private fun GameOver(ui: GameUi) {
 
 // ---------------- settings
 
-private val noAdsIcon = IconSpec(listOf("M5.6 5.6l12.8 12.8"), listOf(Triple(12f, 12f, 9f)))
+private val checkIcon = IconSpec(listOf("M6 12.5l4 4L18 8"))
+
+/** The No Ads offer: what Premium gives, and the Google Play price ($3.99 until Play's own price loads). */
+@Composable
+private fun NoAdsOffer(ui: GameUi) {
+    Scrim(onDismiss = { ui.closeOffer() }) {
+        PopIn {
+            ChunkyCard {
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Box(Modifier.graphicsLayer { val t = ui.now / 1000f; rotationZ = 6f * sin(t * 2f); translationY = -4.dp.toPx() * abs(sin(t * 2.6f)) }) {
+                        Image(painterResource(R.drawable.ic_premium), null, Modifier.size(76.dp), colorFilter = ColorFilter.tint(Color(0xFFF2A516)))
+                    }
+                    Box(Modifier.align(Alignment.TopEnd)) { CloseButton { ui.closeOffer() } }
+                }
+                BasicText("No Ads", style = label(32, Pal.ink, FontWeight.Bold))
+                Column(Modifier.fillMaxWidth().padding(horizontal = 6.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Perk("No banner ads")
+                    Perk("No ads between games")
+                    Perk("Revive with no video")
+                }
+                Spacer(Modifier.height(2.dp))
+                BigButton(ui.host?.price ?: "$3.99", Color(0xFFFF8A3D), null) { ui.buyNoAds() }
+                BasicText(
+                    if (ui.now - ui.storeError < 3000) "Google Play isn't ready. Try again in a moment." else "One-time purchase, yours forever",
+                    style = label(14, if (ui.now - ui.storeError < 3000) Color(0xFFE5404F) else Pal.inkMuted),
+                )
+            }
+        }
+    }
+}
+
+/** Shown to Premium players who tap their crown: a thank-you and what they have. */
+@Composable
+private fun PremiumInfo(ui: GameUi) {
+    Scrim(onDismiss = { ui.closePremium() }) {
+        RainBlocks(ui)
+        PopIn {
+            ChunkyCard {
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Box(Modifier.graphicsLayer { val t = ui.now / 1000f; rotationZ = 6f * sin(t * 2f); translationY = -4.dp.toPx() * abs(sin(t * 2.6f)) }) {
+                        Image(painterResource(R.drawable.ic_premium), null, Modifier.size(76.dp), colorFilter = ColorFilter.tint(Color(0xFFF2A516)))
+                    }
+                    Box(Modifier.align(Alignment.TopEnd)) { CloseButton { ui.closePremium() } }
+                }
+                BasicText("You're Premium!", style = label(30, Pal.ink, FontWeight.Bold))
+                BasicText("You're playing ad-free.\nThanks for supporting the game!",style = label(16, Pal.inkMuted).copy(textAlign = TextAlign.Center))
+                Column(Modifier.fillMaxWidth().padding(horizontal = 6.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Perk("No banner ads")
+                    Perk("No ads between games")
+                    Perk("Revive with no video")
+                }
+                Spacer(Modifier.height(2.dp))
+                BigButton("Awesome!", Color(0xFFF2A516), null) { ui.closePremium() }
+                if (BuildConfig.DEBUG) {
+                    BasicText("Turn ads back on (test build)", style = label(13, Pal.inkMuted), modifier = Modifier.clickable { ui.debugDropNoAds() })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun Perk(text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Box(Modifier.size(30.dp).clip(RoundedCornerShape(50)).background(Color(0xFF3FBF6E)), contentAlignment = Alignment.Center) {
+            Icon24(checkIcon, Color.White, 20.dp)
+        }
+        BasicText(text, style = label(19, Pal.ink, FontWeight.SemiBold))
+    }
+}
 
 /**
  * Candy body shared by the settings controls (same family as BigButton): soft drop shadow, dark outline,
@@ -1078,13 +1400,10 @@ private fun CandyText(text: String, size: Int, dark: Color, stroke: Float = 4f) 
 }
 
 /**
- * Settings row: a soft raised panel with the label, and a premium switch: a sunken track (inner shadow)
- * with a glossy bevelled knob that springs across; the track fills candy green when on.
+ * Settings row: a soft raised panel with the label and a [CandySwitch].
  */
 @Composable
 private fun ToggleRow(text: String, on: Boolean, onClick: () -> Unit) {
-    val knob by animateDpAsState(if (on) 28.dp else 3.dp, spring(dampingRatio = 0.6f, stiffness = 700f), label = "knob")
-    val track by animateColorAsState(if (on) Color(0xFF3FBF6E) else Color(0xFFB9B1D6), tween(180), label = "track")
     Box(Modifier.fillMaxWidth().height(60.dp).juicy(onClick = onClick)) {
         Canvas(Modifier.matchParentSize()) {
             val d = density
@@ -1095,44 +1414,76 @@ private fun ToggleRow(text: String, on: Boolean, onClick: () -> Unit) {
                 Brush.verticalGradient(listOf(Color.White, Color(0xFFF1ECFC)), startY = 0f, endY = 54f * d),
                 Offset.Zero, Size(w, 54f * d), CornerRadius(17f * d),
             )
-            // sunken track
-            val tw = 60f * d
-            val th = 32f * d
-            val tx = w - 16f * d - tw
-            val ty = (54f * d - th) / 2
-            drawRoundRect(shade(track, 0.55f), Offset(tx, ty), Size(tw, th), CornerRadius(th / 2))
-            drawRoundRect(track, Offset(tx, ty + 2.5f * d), Size(tw, th - 2.5f * d), CornerRadius(th / 2))
-            drawRoundRect(Color.Black, Offset(tx, ty), Size(tw, th), CornerRadius(th / 2), alpha = 0.18f, style = Stroke(1.2f * d))
-            // knob: shadow, bevelled white body, gloss
-            val ks = 26f * d
-            val kx = tx + knob.toPx()
-            val ky = ty + (th - ks) / 2
-            drawCircle(Color.Black, ks / 2, Offset(kx + ks / 2, ky + ks / 2 + 2.5f * d), alpha = 0.22f)
-            drawCircle(Color(0xFFD9D2EE), ks / 2, Offset(kx + ks / 2, ky + ks / 2 + 1.2f * d))
-            drawCircle(
-                Brush.verticalGradient(listOf(Color.White, Color(0xFFF0ECFA)), startY = ky, endY = ky + ks),
-                ks / 2 - 1f * d, Offset(kx + ks / 2, ky + ks / 2),
-            )
         }
         BasicText(
             text, style = label(21, Pal.ink, FontWeight.Bold),
             modifier = Modifier.align(Alignment.CenterStart).padding(start = 18.dp, bottom = 6.dp),
         )
+        CandySwitch(on, Modifier.align(Alignment.CenterEnd).padding(end = 16.dp, bottom = 6.dp))
+    }
+}
+
+/**
+ * A real-feeling switch: recessed pill track (outline + inner shadow at the top), a white knob with
+ * equal padding on both ends that springs across, and ON / OFF on the free side.
+ */
+@Composable
+private fun CandySwitch(on: Boolean, modifier: Modifier) {
+    val p by animateFloatAsState(if (on) 1f else 0f, spring(dampingRatio = 0.62f, stiffness = 650f), label = "switch")
+    val track by animateColorAsState(if (on) Color(0xFF3FBF6E) else Color(0xFFC9C2E0), tween(180), label = "track")
+    Box(modifier.size(66.dp, 36.dp)) {
+        Canvas(Modifier.matchParentSize()) {
+            val d = density
+            val e = 2f * d
+            drawRoundRect(shade(track, 0.6f), cornerRadius = CornerRadius(size.height / 2))
+            val inner = Size(size.width - 2 * e, size.height - 2 * e)
+            val ir = CornerRadius(inner.height / 2)
+            drawRoundRect(track, Offset(e, e), inner, ir)
+            drawRoundRect(
+                Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.22f), Color.Transparent), startY = e, endY = e + inner.height * 0.55f),
+                Offset(e, e), inner, ir,
+            )
+            val pad = 3f * d
+            val ks = inner.height - 2 * pad
+            val kx = e + pad + (inner.width - 2 * pad - ks) * p
+            val c = Offset(kx + ks / 2, e + pad + ks / 2)
+            drawCircle(Color.Black, ks / 2, c + Offset(0f, 1.8f * d), alpha = 0.25f)
+            drawCircle(Brush.verticalGradient(listOf(Color.White, Color(0xFFE9E4F7)), startY = c.y - ks / 2, endY = c.y + ks / 2), ks / 2, c)
+            drawCircle(Color.Black, ks / 2, c, alpha = 0.08f, style = Stroke(1f * d))
+        }
+        BasicText(
+            "ON", style = label(12, Color.White, FontWeight.Bold),
+            modifier = Modifier.align(Alignment.CenterStart).padding(start = 10.dp).graphicsLayer { alpha = p },
+        )
+        BasicText(
+            "OFF", style = label(12, Color(0xFF6E6491), FontWeight.Bold),
+            modifier = Modifier.align(Alignment.CenterEnd).padding(end = 8.dp).graphicsLayer { alpha = 1f - p },
+        )
     }
 }
 
 @Composable
-private fun TileButton(icon: IconSpec, text: String, color: Color, modifier: Modifier, enabled: Boolean = true, onClick: () -> Unit) {
+private fun TileButton(
+    icon: IconSpec?, text: String, color: Color, modifier: Modifier, enabled: Boolean = true, image: Int? = null,
+    /** non-null = the premium look: a light sweep every 4 s and a twinkling sparkle (No Ads / Premium tile) */
+    shiny: GameUi? = null,
+    onClick: () -> Unit,
+) {
     val c = if (enabled) color else Color(0xFFB9B3CF)
     // outline 2.5, face 74, lip 7, shadow room 4 -> 90
     Box(modifier.height(90.dp).juicy(enabled, onClick)) {
-        Canvas(Modifier.matchParentSize()) { candy(c, 2.5f, 74f, 7f, 20f) }
+        Canvas(Modifier.matchParentSize()) {
+            candy(c, 2.5f, 74f, 7f, 20f)
+            if (shiny != null) faceSweep(((shiny.now / 1000f) % 4f - 0.5f) / 0.6f, 2.5f, 74f, 20f)
+        }
+        if (shiny != null) Sparkle(shiny, Modifier.align(Alignment.TopEnd).offset(x = 4.dp, y = (-6).dp), phase = 1.3f)
         Column(
             Modifier.fillMaxWidth().padding(top = 2.5.dp).height(74.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            Icon24(icon, Color.White, 30.dp)
+            if (image != null) Image(painterResource(image), null, Modifier.size(32.dp), colorFilter = ColorFilter.tint(Color.White))
+            else if (icon != null) Icon24(icon, Color.White, 30.dp)
             Spacer(Modifier.height(3.dp))
             CandyText(text, 16, shade(c, 0.42f), stroke = 3.5f)
         }
@@ -1162,11 +1513,13 @@ private fun Settings(ui: GameUi) {
                 ToggleRow("Sound", !ui.muted) { ui.toggleSound() }
                 ToggleRow("Music", ui.music) { ui.toggleMusic() }
                 ToggleRow("Vibrate", ui.vibrate) { ui.toggleVibrate() }
+                ToggleRow("Daily reminder", ui.reminders) { ui.toggleReminders() }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     TileButton(Icons.home, "Home", Color(0xFF8A6CFF), Modifier.weight(1f)) { ui.goHome() }
                     TileButton(Icons.replay, "Replay", Color(0xFF3D8BFF), Modifier.weight(1f)) { ui.replay() }
-                    // test build: tapping again turns ads back on; release: a real purchase, and "Ads off" stays
-                    TileButton(noAdsIcon, if (ui.noAds) "Ads off" else "No Ads", Color(0xFFFF8A3D), Modifier.weight(1f), enabled = !ui.noAds || BuildConfig.DEBUG) { ui.toggleNoAds() }
+                    // Premium: a gold tile that opens the "You're ad-free" popup
+                    if (ui.noAds) TileButton(null, "Premium", Color(0xFFF2A516), Modifier.weight(1f), image = R.drawable.ic_premium, shiny = ui) { ui.openPremium() }
+                    else TileButton(null, "No Ads", Color(0xFFFF8A3D), Modifier.weight(1f), image = R.drawable.ic_no_ads) { ui.openOffer() }
                 }
             }
         }
@@ -1318,7 +1671,7 @@ private fun HomeScreen(ui: GameUi) {
         Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        TopBar(ui)
+        TopBar(ui, home = true)
         Spacer(Modifier.weight(0.8f))
         // the logo art (design/logo_source.jpg, cut out) over a soft white glow (tools/soft_glow.py),
         // breathing gently; the glow swells with the breath
@@ -1344,18 +1697,631 @@ private fun HomeScreen(ui: GameUi) {
         Spacer(Modifier.height(16.dp))
         HomeMascot(ui)
         Spacer(Modifier.weight(1f))
+        // Journey on top; the Classic game at the bottom (Continue + a square "new game" button, or just Play)
+        BigButton("Journey", Color(0xFF8A6CFF), null, Modifier.width(290.dp), chip = "Lv ${ui.journeyLevel}") { ui.openJourney() }
+        Spacer(Modifier.height(14.dp))
         if (ui.canContinue) {
-            // pick up exactly where the player left off
-            BigButton("Continue", Color(0xFF3FBF6E), Icons.play, Modifier.width(260.dp), chip = fmt(ui.game.score)) { ui.play() }
-            Spacer(Modifier.height(14.dp))
-            BasicText(
-                "New game",
-                modifier = Modifier.clip(RoundedCornerShape(14.dp)).juicy { ui.replay() }.padding(horizontal = 18.dp, vertical = 10.dp),
-                style = label(20, Pal.text, FontWeight.Bold).copy(shadow = Shadow(Pal.scoreShadow, Offset(0f, 3f), 0f)),
-            )
+            Row(Modifier.width(290.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                BigButton("Continue", Color(0xFF3FBF6E), null, Modifier.weight(1f), image = R.drawable.ic_continue) { ui.play() }
+                SquareCandyButton(Icons.replay, Color(0xFF3D8BFF), "New game") { ui.newClassicGame() }
+            }
         } else {
-            BigButton("Play", Color(0xFF3FBF6E), Icons.play, Modifier.width(260.dp)) { ui.play() }
+            BigButton("Classic", Color(0xFF3FBF6E), null, Modifier.width(290.dp), image = R.drawable.ic_classic) { ui.play() }
         }
         Spacer(Modifier.weight(0.7f))
+    }
+}
+
+// ---------------- studio splash
+
+private const val SPLASH_MS = 3800f
+
+/**
+ * PaperCrane Labs splash (once per app open, about 3.8 s, tap to skip): on white, the logo floats in and settles,
+ * the wordmark fades up beneath it, both hold while the logo hovers gently, then everything fades into Home.
+ */
+@Composable
+private fun BrandSplash(onDone: () -> Unit) {
+    val t = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        // Android 12+: wait out the held system launch screen (MainActivity) so the intro starts from its first frame
+        if (android.os.Build.VERSION.SDK_INT >= 31) kotlinx.coroutines.delay(1250)
+        t.animateTo(SPLASH_MS, tween(SPLASH_MS.toInt(), easing = LinearEasing))
+        onDone()
+    }
+    val ms = t.value
+    fun seg(a: Float, b: Float) = ((ms - a) / (b - a)).coerceIn(0f, 1f)
+    val out = 1f - seg(3250f, SPLASH_MS)                    // the whole splash fades out at the end
+    val crane = seg(150f, 1150f)
+    val craneEase = 1f - (1f - crane) * (1f - crane) * (1f - crane)
+    val word = seg(900f, 1700f)
+    val src = remember { MutableInteractionSource() }
+    Box(
+        Modifier.fillMaxSize().graphicsLayer { alpha = out }.background(Color.White)
+            .clickable(interactionSource = src, indication = null) { onDone() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Image(
+                painterResource(R.drawable.brand_logo), "PaperCrane Labs",
+                Modifier.width(190.dp).graphicsLayer {
+                    alpha = craneEase
+                    val s = 0.82f + 0.18f * craneEase
+                    scaleX = s; scaleY = s
+                    // floats up into place, then a slow gentle hover
+                    translationY = (1f - craneEase) * 40.dp.toPx() - 4.dp.toPx() * sin(ms / 1000f * 2.2f) * craneEase
+                    rotationZ = (1f - craneEase) * -6f
+                },
+            )
+            Spacer(Modifier.height(34.dp))
+            Image(
+                painterResource(R.drawable.brand_wordmark), null,
+                Modifier.width(250.dp).graphicsLayer {
+                    alpha = word
+                    translationY = (1f - word) * 14.dp.toPx()
+                },
+            )
+        }
+    }
+}
+
+// ---------------- journey
+
+/** Score progress toward the level's target: a gold candy bar with "1,240 / 1,700". */
+@Composable
+private fun TargetBar(ui: GameUi) {
+    val p by animateFloatAsState((ui.displayScore / ui.target).coerceIn(0f, 1f), tween(250), label = "target")
+    Box(Modifier.fillMaxWidth(0.82f).height(30.dp), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.matchParentSize()) {
+            val d = density
+            val r = CornerRadius(size.height / 2)
+            drawRoundRect(Color(0xFF1A1030), cornerRadius = r)
+            val e = 3f * d
+            val iw = size.width - 2 * e
+            val ih = size.height - 2 * e
+            drawRoundRect(Color(0x33FFFFFF), Offset(e, e), Size(iw, ih), CornerRadius(ih / 2))
+            if (p > 0.01f) {
+                val fw = maxOf(ih, iw * p)
+                drawRoundRect(
+                    Brush.verticalGradient(listOf(Color(0xFFFFE27A), Color(0xFFFFB020), Color(0xFFE08A10)), startY = e, endY = e + ih),
+                    Offset(e, e), Size(fw, ih), CornerRadius(ih / 2),
+                )
+                drawRoundRect(Color.White.copy(alpha = 0.35f), Offset(e + ih * 0.3f, e + 2f * d), Size(fw - ih * 0.6f, ih * 0.3f), CornerRadius(ih * 0.15f))
+            }
+        }
+        CandyText("${fmt(ui.displayScore.roundToInt())} / ${fmt(ui.target)}", 15, Color(0xFF2A1B3D), stroke = 3f)
+    }
+}
+
+/** Titles of the story pictures, in road order (later ones fall back to "Picture N"). */
+private val STORY_TITLES = listOf("Wake up!", "The meadow", "The forest", "The beach", "The mountain", "The heist")
+private fun storyTitle(i: Int) = STORY_TITLES.getOrElse(i) { "Picture ${i + 1}" }
+
+private val muted = ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(0.55f) })
+
+/** A soft, strong blur: shrink to 64px, three box-blur passes each way, then it's drawn big (bilinear) = smooth. */
+private fun blurOf(img: ImageBitmap): ImageBitmap {
+    val n = 64
+    val small = android.graphics.Bitmap.createScaledBitmap(img.asAndroidBitmap(), n, n, true)
+    val px = IntArray(n * n)
+    small.getPixels(px, 0, n, 0, 0, n, n)
+    val tmp = IntArray(n * n)
+    val r = 3
+    fun pass(src: IntArray, dst: IntArray, horizontal: Boolean) {
+        for (y in 0 until n) for (x in 0 until n) {
+            var a = 0; var rr = 0; var g = 0; var b = 0; var cnt = 0
+            for (k in -r..r) {
+                val xx = if (horizontal) (x + k).coerceIn(0, n - 1) else x
+                val yy = if (horizontal) y else (y + k).coerceIn(0, n - 1)
+                val c = src[yy * n + xx]
+                a += c ushr 24; rr += (c shr 16) and 0xFF; g += (c shr 8) and 0xFF; b += c and 0xFF; cnt++
+            }
+            dst[y * n + x] = ((a / cnt) shl 24) or ((rr / cnt) shl 16) or ((g / cnt) shl 8) or (b / cnt)
+        }
+    }
+    repeat(3) { pass(px, tmp, true); pass(tmp, px, false) }
+    val out = android.graphics.Bitmap.createBitmap(n, n, android.graphics.Bitmap.Config.ARGB_8888)
+    out.setPixels(px, 0, n, 0, 0, n, n)
+    return out.asImageBitmap()
+}
+
+/**
+ * A story picture as a 3x3 puzzle: the whole scene in soft black and white, and every piece earned in full color.
+ * [newPiece] colors in with [popT] 0..1 and a white flash (the Level complete popup).
+ * Art: res/drawable-nodpi/story_<n>; until it exists, Goldie on the stretch's theme color.
+ */
+@Composable
+private fun StoryPicture(index: Int, revealed: Int, modifier: Modifier, newPiece: Int = -1, popT: Float = 1f, corner: Dp = 16.dp) {
+    val ctx = LocalContext.current
+    val id = remember(index) { ctx.resources.getIdentifier("story_${index + 1}", "drawable", ctx.packageName) }
+    val art = if (id != 0) ImageBitmap.imageResource(id) else null
+    val mascot = ImageBitmap.imageResource(R.drawable.mascot)
+    // undiscovered pieces: the scene shrunk to a few pixels and stretched back = a soft blur (works on every Android version)
+    val artBlur = remember(art) { art?.let { blurOf(it) } }
+    val mascotBlur = remember(mascot) { blurOf(mascot) }
+    val th = Themes.all[index % Themes.all.size]
+    Canvas(modifier.clip(RoundedCornerShape(corner))) {
+        val side = size.minDimension
+        val cell = side / 3f
+        fun scene(filter: ColorFilter?, alpha: Float = 1f, blurred: Boolean = false) {
+            val a = if (blurred) artBlur else art
+            if (a != null) {
+                drawImage(a, IntOffset.Zero, IntSize(a.width, a.height), IntOffset.Zero, IntSize(side.toInt(), side.toInt()), alpha = alpha, colorFilter = filter)
+            } else {
+                drawRect(Brush.verticalGradient(listOf(lerp(th.bg, Color.White, 0.45f), th.bg)), size = Size(side, side), alpha = alpha, colorFilter = filter)
+                val mb = if (blurred) mascotBlur else mascot
+                val m = (side * 0.62f).toInt()
+                val o = ((side - m) / 2f).toInt()
+                drawImage(mb, IntOffset.Zero, IntSize(mb.width, mb.height), IntOffset(o, o), IntSize(m, m), alpha = alpha, colorFilter = filter)
+            }
+        }
+        // not earned yet: blurred, muted and a little darker
+        scene(muted, blurred = true)
+        drawRect(Color(0xFF1A1030), size = Size(side, side), alpha = 0.22f)
+        // earned pieces in color
+        for (k in 0 until revealed.coerceAtMost(Journey.PIECES)) {
+            val a = if (k == newPiece) popT else 1f
+            if (a <= 0.01f) continue
+            val x = (k % 3) * cell
+            val y = (k / 3) * cell
+            clipRect(x, y, x + cell, y + cell) {
+                scene(null, a)
+                if (k == newPiece) drawRect(Color.White, Offset(x, y), Size(cell, cell), alpha = 0.7f * sin(PI.toFloat() * popT))
+            }
+        }
+        // reveal burst over the new piece: a gold frame, an expanding ring and sparkle rays
+        if (newPiece in 0 until Journey.PIECES && popT in 0.001f..0.999f) {
+            val x = (newPiece % 3) * cell
+            val y = (newPiece / 3) * cell
+            val c = Offset(x + cell / 2, y + cell / 2)
+            val fade = 1f - popT
+            drawRect(Color(0xFFFFD54A), Offset(x, y), Size(cell, cell), alpha = fade, style = Stroke(4f * density))
+            drawCircle(Color(0xFFFFE27A), cell * (0.25f + 0.9f * popT), c, alpha = 0.9f * fade, style = Stroke(5f * density * fade + 1f))
+            for (i in 0 until 8) {
+                val ang = i * PI.toFloat() / 4f + popT
+                val r0 = cell * (0.2f + 0.5f * popT)
+                val r1 = r0 + cell * 0.25f * fade
+                drawLine(
+                    Color.White, Offset(c.x + cos(ang) * r0, c.y + sin(ang) * r0), Offset(c.x + cos(ang) * r1, c.y + sin(ang) * r1),
+                    strokeWidth = 3f * density, alpha = fade, cap = StrokeCap.Round,
+                )
+            }
+        }
+        // the puzzle seams, until the picture is complete
+        if (revealed < Journey.PIECES) {
+            val w = 1.5f * density
+            for (i in 1..2) {
+                drawRect(Color.White.copy(alpha = 0.45f), Offset(i * cell - w / 2, 0f), Size(w, side))
+                drawRect(Color.White.copy(alpha = 0.45f), Offset(0f, i * cell - w / 2), Size(side, w))
+            }
+        }
+    }
+}
+
+/** A round candy button face for the road's level stops. */
+private fun DrawScope.candyCircle(color: Color) {
+    val d = density
+    val r = size.minDimension / 2 - 2f * d
+    val c = Offset(size.width / 2, size.height / 2 - 2f * d)
+    drawCircle(Color.Black, r, c + Offset(0f, 5f * d), alpha = 0.18f)
+    drawCircle(shade(color, 0.42f), r, c + Offset(0f, 3f * d))
+    drawCircle(shade(color, 0.42f), r, c)
+    drawCircle(
+        Brush.verticalGradient(listOf(lerp(color, Color.White, 0.3f), color, shade(color, 0.9f)), startY = c.y - r, endY = c.y + r),
+        r - 2.5f * d, c,
+    )
+    drawOval(
+        Color.White.copy(alpha = 0.4f), Offset(c.x - r * 0.55f, c.y - r * 0.82f), Size(r * 1.1f, r * 0.55f),
+    )
+}
+
+/** A square candy button the same height and style as [BigButton] (used for "new game" beside Continue). */
+@Composable
+private fun SquareCandyButton(icon: IconSpec, color: Color, desc: String, onClick: () -> Unit) {
+    Box(Modifier.size(width = 69.dp, height = 69.dp).juicy(onClick = onClick).semantics { contentDescription = desc }) {
+        Canvas(Modifier.matchParentSize()) { candy(color, 2.5f, 51f, 8f, 22f) }
+        Box(Modifier.padding(top = 2.5.dp).size(width = 69.dp, height = 51.dp), contentAlignment = Alignment.Center) {
+            Icon24(icon, Color.White, 30.dp)
+        }
+    }
+}
+
+private val GOLD_LANE = listOf(Color(0xFFE08A10), Color(0xFFFFE27A), Color(0xFFFFB020))
+
+/**
+ * The road under every stop, one straight lane: a dark edge, a soft inner lane with a dotted center line,
+ * and gold where it has been travelled, with light dots flowing up it.
+ * [fillBottom]/[fillTop] 0..1: how much of the lower/upper half is gold (it fills upward).
+ * Stops are multiples of the 20dp dot spacing tall, so the dots line up from one stop to the next.
+ */
+private fun DrawScope.road(t: Float, fillBottom: Float, fillTop: Float) {
+    val d = density
+    val cx = size.width / 2
+    val h = size.height
+    val half = h / 2
+    val outer = 28f * d
+    val inner = 18f * d
+    val gap = 20f * d
+    drawRect(Color(0x38000000), Offset(cx - outer / 2, 0f), Size(outer, h))
+    drawRect(Color(0x22FFFFFF), Offset(cx - inner / 2, 0f), Size(inner, h))
+    var y = gap / 2
+    while (y < h) { drawCircle(Color.White.copy(alpha = 0.30f), 2.2f * d, Offset(cx, y)); y += gap }
+    fun gold(top: Float, bottom: Float) {
+        if (bottom - top < 0.5f) return
+        drawRect(Color(0xFFFFC93C).copy(alpha = 0.22f), Offset(cx - outer / 2 - 3f * d, top), Size(outer + 6f * d, bottom - top))
+        drawRect(Brush.horizontalGradient(GOLD_LANE, startX = cx - inner / 2, endX = cx + inner / 2), Offset(cx - inner / 2, top), Size(inner, bottom - top))
+        clipRect(cx - inner / 2, top, cx + inner / 2, bottom) {
+            val phase = (t * 26f * d) % gap
+            var yy = gap / 2 - phase
+            while (yy < h + gap) { drawCircle(Color.White.copy(alpha = 0.75f), 2.4f * d, Offset(cx, yy)); yy += gap }
+        }
+    }
+    gold(h - half * fillBottom, h)
+    gold(half - half * fillTop, half)
+}
+
+/**
+ * How much of a road segment is gold. Segment s joins level s and s+1 (through a picture stop after every 9th level).
+ * The segment just travelled (ui.roadFrom) fills over ui.roadT: its lower part, the picture stop, then its upper part.
+ * part: 0 = lower part (level s, top half), 1 = picture stop, 2 = upper part (level s+1, bottom half).
+ */
+private fun segFill(ui: GameUi, seg: Int, part: Int): Float {
+    if (seg < 1) return 1f
+    val cur = ui.journeyLevel
+    if (seg + 1 < cur) return 1f
+    if (seg + 1 > cur) return 0f
+    if (seg != ui.roadFrom) return 1f
+    val f = ui.roadT
+    val pic = Journey.piece(seg) == Journey.PIECES - 1
+    val (lo, hi) = when (part) {
+        0 -> 0f to (if (pic) 1f / 3 else 0.5f)
+        1 -> 1f / 3 to 2f / 3
+        else -> (if (pic) 2f / 3 else 0.5f) to 1f
+    }
+    return ((f - lo) / (hi - lo)).coerceIn(0f, 1f)
+}
+
+/** Springs in when it first shows (entering the map, or scrolling to it). */
+@Composable
+private fun rememberPopIn(): Animatable<Float, *> {
+    val pop = remember { Animatable(0.4f) }
+    LaunchedEffect(Unit) { pop.animateTo(1f, spring(dampingRatio = 0.5f, stiffness = 420f)) }
+    return pop
+}
+
+@Composable
+private fun LevelStop(ui: GameUi, level: Int) {
+    val cur = ui.journeyLevel
+    // arriving: the gold is still filling up to this stop
+    val arriving = level == cur && ui.roadFrom == level - 1 && ui.roadT < 1f
+    val here = level == cur && !arriving
+    val done = level < cur
+    val pop = rememberPopIn()
+    val arrive = remember { Animatable(1f) }
+    LaunchedEffect(here) {
+        if (here && ui.roadFrom == level - 1 && ui.now - ui.roadAt < 2500) {
+            ui.sfx(Sfx.COIN)
+            arrive.snapTo(0.55f)
+            arrive.animateTo(1f, spring(dampingRatio = 0.38f, stiffness = 320f))
+        }
+    }
+    Box(Modifier.fillMaxWidth().height(STOP_LEVEL.dp), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.matchParentSize()) {
+            val t = ui.now / 1000f
+            road(t, fillBottom = segFill(ui, level - 1, 2), fillTop = segFill(ui, level, 0))
+            if (here) {
+                // soft glow + two ripple rings
+                val c = center
+                drawCircle(Brush.radialGradient(listOf(Color(0x997CF0A6), Color.Transparent), c, 70.dp.toPx()), 70.dp.toPx(), c)
+                for (j in 0..1) {
+                    val p = (t * 0.65f + j * 0.5f) % 1f
+                    drawCircle(Color(0xFFB8FFD0), 40.dp.toPx() * (1f + 0.55f * p), c, alpha = 0.55f * (1f - p), style = Stroke(3.dp.toPx()))
+                }
+            }
+        }
+        val size = if (here) 78.dp else 60.dp
+        Box(
+            Modifier.size(size).graphicsLayer {
+                val breathe = if (here) 1f + 0.05f * sin(ui.now / 1000f * 4f) else 1f
+                val s = pop.value * arrive.value * breathe
+                scaleX = s; scaleY = s
+                alpha = pop.value.coerceIn(0f, 1f)
+            }.then(if (here) Modifier.juicy { ui.startLevel() } else Modifier),
+            contentAlignment = Alignment.Center,
+        ) {
+            val col = when { here -> Color(0xFF3FBF6E); done -> Color(0xFFF2A516); else -> Color(0xFF7D76A6) }
+            Canvas(Modifier.matchParentSize()) { candyCircle(col) }
+            Box(Modifier.graphicsLayer { alpha = if (done || here) 1f else 0.75f }) {
+                CandyText(level.toString(), if (here) 28 else 22, shade(col, 0.42f), stroke = 3.5f)
+            }
+        }
+        if (here) {
+            // Goldie waits beside the level you're on, hopping
+            Image(
+                painterResource(R.drawable.mascot), "Gemblo",
+                Modifier.align(Alignment.CenterStart).padding(start = 30.dp).size(80.dp).graphicsLayer {
+                    translationY = -8.dp.toPx() * abs(sin(ui.now / 1000f * 3.5f))
+                    val s = arrive.value; scaleX = s; scaleY = s
+                },
+            )
+            Column(Modifier.align(Alignment.CenterEnd).padding(end = 22.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                BasicText("Target", style = label(14, Pal.text.copy(alpha = 0.8f)))
+                BasicText(fmt(Journey.target(level)), style = label(20, Pal.text, FontWeight.Bold))
+            }
+        }
+    }
+}
+
+/** A picture stop on the road: a framed thumbnail of that stretch's story picture; tap to see it in the album. */
+@Composable
+private fun PictureStop(ui: GameUi, index: Int) {
+    val revealed = ui.piecesOf(index)
+    val complete = revealed == Journey.PIECES
+    val seg = (index + 1) * Journey.PIECES
+    val pop = rememberPopIn()
+    Box(Modifier.fillMaxWidth().height(STOP_PICTURE.dp), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.matchParentSize()) {
+            val f = segFill(ui, seg, 1)
+            road(ui.now / 1000f, fillBottom = f.coerceAtMost(0.5f) * 2f, fillTop = ((f - 0.5f) * 2f).coerceIn(0f, 1f))
+        }
+        Box(
+            Modifier.size(98.dp).graphicsLayer { val s = pop.value; scaleX = s; scaleY = s; alpha = s.coerceIn(0f, 1f) }
+                .juicy { ui.viewPicture(index) }.clip(RoundedCornerShape(22.dp))
+                .background(if (complete) Color(0xFFFFC93C) else Color.White).padding(5.dp),
+        ) { StoryPicture(index, revealed, Modifier.fillMaxSize(), corner = 17.dp) }
+        Column(Modifier.align(Alignment.CenterEnd).padding(end = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            CandyText(storyTitle(index), 16, Pal.scoreShadow, stroke = 3f)
+            BasicText(if (complete) "Complete!" else "$revealed / ${Journey.PIECES}", style = label(15, Pal.text, FontWeight.Bold))
+        }
+    }
+}
+
+/** Where the road begins: under the floating button, so the road looks like it runs on behind it. */
+@Composable
+private fun RoadStart(ui: GameUi) {
+    Box(Modifier.fillMaxWidth().height(STOP_START.dp)) {
+        Canvas(Modifier.matchParentSize()) { road(ui.now / 1000f, fillBottom = 1f, fillTop = 1f) }
+    }
+}
+
+/** Soft light motes drifting up behind the road. */
+@Composable
+private fun MapMotes(ui: GameUi, modifier: Modifier) {
+    Canvas(modifier) {
+        val t = ui.now / 1000f
+        val r = Random(7)
+        repeat(22) {
+            val speed = (10 + r.nextInt(18)).dp.toPx()
+            val baseY = r.nextFloat() * size.height
+            val x = r.nextFloat() * size.width + sin(t * 0.6f + it) * 10.dp.toPx()
+            val y = size.height - ((t * speed + baseY) % (size.height + 20.dp.toPx())) + 10.dp.toPx()
+            val rad = (1.5f + r.nextFloat() * 2.5f).dp.toPx()
+            val tw = 0.5f + 0.5f * sin(t * (1.5f + r.nextFloat()) + it * 1.7f)
+            drawCircle(Color.White, rad, Offset(x, y), alpha = 0.10f + 0.22f * tw)
+        }
+    }
+}
+
+private const val STOP_START = 180
+private const val STOP_LEVEL = 100
+private const val STOP_PICTURE = 140
+private const val STOP_SOON = 220
+
+/** The top of the road: it fades out into "more story coming soon". */
+@Composable
+private fun ComingSoon(ui: GameUi) {
+    Box(Modifier.fillMaxWidth().height(STOP_SOON.dp), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.matchParentSize()) {
+            // the lane fades out upward
+            val d = density
+            val cx = size.width / 2
+            drawRect(
+                Brush.verticalGradient(listOf(Color.Transparent, Color(0x38000000)), startY = size.height * 0.15f, endY = size.height),
+                Offset(cx - 14f * d, 0f), Size(28f * d, size.height),
+            )
+            drawRect(
+                Brush.verticalGradient(listOf(Color.Transparent, Color(0x22FFFFFF)), startY = size.height * 0.15f, endY = size.height),
+                Offset(cx - 9f * d, 0f), Size(18f * d, size.height),
+            )
+        }
+        Column(
+            Modifier.clip(RoundedCornerShape(24.dp)).background(Color(0x33FFFFFF)).padding(horizontal = 26.dp, vertical = 14.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            CandyText("Coming soon", 24, Pal.scoreShadow, stroke = 3.5f)
+            BasicText("More story in the next update", style = label(14, Pal.text.copy(alpha = 0.85f), FontWeight.SemiBold))
+        }
+        Sparkle(ui, Modifier.align(Alignment.Center).offset(x = 110.dp, y = (-34).dp))
+        Sparkle(ui, Modifier.align(Alignment.Center).offset(x = (-112).dp, y = 30.dp), phase = 2.1f)
+    }
+}
+
+/**
+ * The Journey road: one straight line from the bottom up, every story stretch (9 levels + its picture stop),
+ * ending in "Coming soon". It runs edge to edge, scrolling on behind the header and the floating button.
+ * A plain scrolling column (not a lazy list) so it always opens exactly on the current level.
+ */
+@Composable
+private fun JourneyMap(ui: GameUi) {
+    val cur = ui.journeyLevel
+    val pictures = maxOf(STORY_TITLES.size, Journey.picture(cur) + 1)
+    // bottom to top: start, then 9 levels + their picture (as -(index + 1)) per stretch, then "coming soon" (MIN_VALUE)
+    val stops = remember(cur) {
+        buildList {
+            add(0)
+            for (p in 0 until pictures) { for (k in 1..Journey.PIECES) add(p * Journey.PIECES + k); add(-(p + 1)) }
+            add(Int.MIN_VALUE)
+        }
+    }
+    val density = LocalDensity.current
+    val insets = WindowInsets.safeDrawing.asPaddingValues()
+    val topInset = insets.calculateTopPadding()
+    val bottomInset = insets.calculateBottomPadding()
+    val scroll = rememberScrollState()
+    LaunchedEffect(cur) {
+        // the current level's center, measured from the bottom of the road; park it ~380dp above the screen's bottom
+        var fromBottom = bottomInset.value + STOP_START
+        for (v in stops) {
+            if (v == cur) { fromBottom += STOP_LEVEL / 2f; break }
+            if (v > 0) fromBottom += STOP_LEVEL else if (v < 0 && v != Int.MIN_VALUE) fromBottom += STOP_PICTURE
+        }
+        scroll.scrollTo(with(density) { (fromBottom - 380f).coerceAtLeast(0f).dp.roundToPx() })
+    }
+    Box(Modifier.fillMaxSize()) {
+        MapMotes(ui, Modifier.matchParentSize())
+        Column(
+            Modifier.fillMaxSize().verticalScroll(scroll, reverseScrolling = true),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Spacer(Modifier.height(topInset + 100.dp))
+            for (v in stops.asReversed()) {
+                when {
+                    v == Int.MIN_VALUE -> ComingSoon(ui)
+                    v > 0 -> LevelStop(ui, v)
+                    v == 0 -> RoadStart(ui)
+                    else -> PictureStop(ui, -v - 1)
+                }
+            }
+            Spacer(Modifier.height(bottomInset))
+        }
+        Box(
+            Modifier.align(Alignment.TopCenter).fillMaxWidth().height(topInset + 150.dp)
+                .background(Brush.verticalGradient(listOf(Pal.bg, Pal.bg.copy(alpha = 0.9f), Color.Transparent))),
+        )
+        Box(
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(bottomInset + 200.dp)
+                .background(Brush.verticalGradient(listOf(Color.Transparent, Pal.bg.copy(alpha = 0.9f), Pal.bg))),
+        )
+        Box(Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(top = topInset + 12.dp).padding(horizontal = 16.dp)) {
+            Box(Modifier.align(Alignment.CenterStart)) {
+                ShinyTopButton(ui, Color(0xFF8A6CFF), null, "Home", wiggle = false, icon = Icons.home, sparkle = false) { ui.backToHome() }
+            }
+            Box(Modifier.align(Alignment.Center)) { CandyText("Journey", 34, Pal.scoreShadow, stroke = 4f) }
+            Box(Modifier.align(Alignment.CenterEnd)) {
+                ShinyTopButton(ui, Color(0xFFFF6FA8), null, "Album", wiggle = false, icon = albumIcon, sparkle = false) { ui.openAlbum() }
+            }
+        }
+        BigButton(
+            "Level $cur", Color(0xFF3FBF6E), Icons.playSolid,
+            Modifier.align(Alignment.BottomCenter).padding(bottom = bottomInset + 72.dp).width(260.dp),
+        ) { ui.startLevel() }
+    }
+}
+
+/** Level passed: the story picture's new piece uncovers, then back up the road. */
+@Composable
+private fun LevelDone(ui: GameUi) {
+    val level = ui.playingLevel
+    val pic = Journey.picture(level)
+    val piece = Journey.piece(level)
+    val complete = piece == Journey.PIECES - 1
+    val pop = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        // the reveal: the level-up sound lands with the piece; a finished picture gets the win sound after it
+        kotlinx.coroutines.delay(550)
+        ui.sfx(Sfx.LEVELUP)
+        ui.hx?.boom()
+        pop.animateTo(1f, tween(750))
+        if (complete) ui.sfx(Sfx.FANFARE)
+    }
+    Scrim {
+        RainBlocks(ui)
+        PopIn {
+            ChunkyCard {
+                BasicText("Level $level complete!", style = label(28, Pal.ink, FontWeight.Bold))
+                StoryPicture(pic, piece + 1, Modifier.size(220.dp), newPiece = piece, popT = pop.value)
+                BasicText(
+                    if (complete) "Picture complete!" else "Piece ${piece + 1} of ${Journey.PIECES}",
+                    style = label(18, if (complete) Color(0xFFE08A10) else Pal.inkMuted, FontWeight.Bold),
+                )
+                BigButton("Continue", Color(0xFF3FBF6E), Icons.playSolid) { ui.afterLevel() }
+            }
+        }
+    }
+}
+
+private val albumIcon = IconSpec(listOf("M4 5h16v14H4z", "M4 16l5-5 4 4 3-3 4 4"), listOf(Triple(15.5f, 9f, 1.6f)))
+private val lockIcon = IconSpec(listOf("M8 11V8a4 4 0 0 1 8 0v3", "M6 11h12v9H6z"))
+
+/** The Album: every story picture, with its progress. Tap one to see it big. */
+@Composable
+private fun AlbumScreen(ui: GameUi) {
+    val count = maxOf(STORY_TITLES.size, Journey.picture(ui.journeyLevel) + 1)
+    val done = (0 until count).count { ui.piecesOf(it) == Journey.PIECES }
+    val src = remember { MutableInteractionSource() }
+    Box(Modifier.fillMaxSize().background(Pal.bg).grain().clickable(interactionSource = src, indication = null) {}) {
+        Column(
+            Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Box(Modifier.fillMaxWidth().height(58.dp)) {
+                Box(Modifier.align(Alignment.Center)) { CandyText("Album", 34, Pal.scoreShadow, stroke = 4f) }
+                Box(Modifier.align(Alignment.CenterEnd)) { CloseButton { ui.closeAlbum() } }
+            }
+            BasicText("$done of $count pictures complete", style = label(16, Pal.text.copy(alpha = 0.85f), FontWeight.SemiBold))
+            Spacer(Modifier.height(12.dp))
+            LazyVerticalGrid(
+                GridCells.Fixed(2), Modifier.fillMaxWidth().weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(14.dp), verticalArrangement = Arrangement.spacedBy(14.dp),
+                contentPadding = PaddingValues(bottom = 16.dp),
+            ) {
+                items(count) { i -> AlbumCard(ui, i) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AlbumCard(ui: GameUi, index: Int) {
+    val revealed = ui.piecesOf(index)
+    val complete = revealed == Journey.PIECES
+    val locked = index > Journey.picture(ui.journeyLevel)
+    Column(
+        Modifier.clip(RoundedCornerShape(20.dp)).background(if (complete) Color(0xFFFFC93C) else Color.White)
+            .juicy { ui.viewPicture(index) }.padding(7.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(Modifier.fillMaxWidth().aspectRatio(1f), contentAlignment = Alignment.Center) {
+            StoryPicture(index, revealed, Modifier.fillMaxSize(), corner = 14.dp)
+            if (locked) {
+                Box(Modifier.size(44.dp).clip(RoundedCornerShape(50)).background(Color(0x99000000)), contentAlignment = Alignment.Center) {
+                    Icon24(lockIcon, Color.White, 24.dp)
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        BasicText("${index + 1}. ${storyTitle(index)}", style = label(15, Pal.ink, FontWeight.Bold), maxLines = 1)
+        BasicText(
+            when { complete -> "Complete!"; locked -> "Locked"; else -> "$revealed / ${Journey.PIECES} pieces" },
+            style = label(13, if (complete) Color(0xFF8A4B00) else Pal.inkMuted, FontWeight.SemiBold),
+        )
+    }
+}
+
+/** One story picture, big. */
+@Composable
+private fun PictureViewer(ui: GameUi) {
+    val i = ui.albumView
+    val revealed = ui.piecesOf(i)
+    val complete = revealed == Journey.PIECES
+    val locked = i > Journey.picture(ui.journeyLevel)
+    Scrim(onDismiss = { ui.closePicture() }) {
+        PopIn {
+            ChunkyCard {
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    BasicText(storyTitle(i), style = label(26, Pal.ink, FontWeight.Bold))
+                    Box(Modifier.align(Alignment.CenterEnd)) { CloseButton { ui.closePicture() } }
+                }
+                StoryPicture(i, revealed, Modifier.fillMaxWidth().aspectRatio(1f), corner = 18.dp)
+                BasicText(
+                    when {
+                        complete -> "Picture ${i + 1} complete!"
+                        locked -> "Reach level ${i * Journey.PIECES + 1} to start this picture"
+                        else -> "$revealed of ${Journey.PIECES} pieces. Pass levels to color it in!"
+                    },
+                    style = label(15, Pal.inkMuted, FontWeight.SemiBold).copy(textAlign = TextAlign.Center),
+                )
+            }
+        }
     }
 }
