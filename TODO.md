@@ -26,7 +26,7 @@ Checklist:
 - [ ] Flaticon author names for `ic_no_ads`, `ic_premium`, `ic_classic`, `ic_continue` in `licenses/ART.md`, plus a credit line in the app
 - [ ] Play Console: in-app product `no_ads` ($3.99)
 - [ ] AdMob: real banner, interstitial and rewarded ids at the top of `app/build.gradle.kts`
-- [ ] Privacy policy: mention in-app purchases and notifications
+- [x] Privacy policy: mention in-app purchases and notifications (done 2026-11-20)
 - [ ] Story picture 7+ (and the castle) for the Journey road; "Coming soon" moves up automatically
 
 ## Done this round

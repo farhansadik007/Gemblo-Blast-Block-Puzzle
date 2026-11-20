@@ -32,3 +32,13 @@ Thumbs.db
 text-ss/
 captures/
 *.png.tmp
+
+# Store graphics: keep the finals, the script and only the captures it uses
+store-graphics/_*
+store-graphics/raw/*
+!store-graphics/raw/combo_1.png
+!store-graphics/raw/board.png
+!store-graphics/raw/journey.png
+!store-graphics/raw/reveal_3.png
+!store-graphics/raw/album.png
+!store-graphics/raw/home.png

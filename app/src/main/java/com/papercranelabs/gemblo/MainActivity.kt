@@ -66,6 +66,7 @@ class MainActivity : ComponentActivity() {
                 GameUi(Game(), prefs, sfx).also {
                     it.hx = Haptics(this); it.host = host; gameUi = it
                     it.demoText = BuildConfig.DEBUG && intent.getBooleanExtra("demo_text", false)
+                    if (BuildConfig.DEBUG) intent.getStringExtra("showcase")?.let { k -> it.showcase(k, intent.getIntExtra("theme", -1)) }
                 }
             }
             GameScreen(ui, ads)

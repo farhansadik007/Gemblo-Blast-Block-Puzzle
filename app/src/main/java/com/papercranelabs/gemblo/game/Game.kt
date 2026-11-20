@@ -255,6 +255,17 @@ class Game(seed: Long = System.nanoTime()) {
         newTray()
     }
 
+    /** Debug only (store screenshots): set the board, score, combo and tray directly. */
+    fun debugSet(cells: IntArray, score: Int, combo: Int, pieces: List<Piece?>) {
+        cells.copyInto(grid)
+        this.score = score; this.combo = combo; movesSinceClear = 0
+        pieces.forEachIndexed { i, p -> tray[i] = p }
+        trayVersion++
+    }
+
+    /** Debug only (store screenshots). */
+    fun debugScore(s: Int) { score = s }
+
     /** Hammer booster: smash one block. Returns its color, or 0. */
     fun hammer(r: Int, c: Int): Int {
         val k = grid[r * N + c]

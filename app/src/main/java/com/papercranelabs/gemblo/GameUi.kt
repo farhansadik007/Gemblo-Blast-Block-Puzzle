@@ -582,6 +582,58 @@ class GameUi(var game: Game, private val prefs: Prefs, private val sound: SoundF
         sync()
     }
 
+    // ---------------- store screenshots (debug only: adb ... --es showcase board|combo|reveal|journey|album|home --ei theme N)
+    private var showcaseStep: Pair<Long, () -> Unit>? = null
+    private var showcaseT0 = -1L
+
+    fun showcase(kind: String, theme: Int) {
+        if (!BuildConfig.DEBUG) return
+        showSplash = false
+        fun paint() { if (theme in Themes.all.indices) Pal.theme = Themes.all[theme] }
+        // a colorful board with rows 6 and 7 one domino short of clearing
+        val board = intArrayOf(
+            0, 0, 2, 2, 0, 0, 5, 5,
+            0, 3, 2, 2, 0, 4, 5, 5,
+            1, 3, 3, 0, 0, 4, 4, 0,
+            1, 1, 3, 0, 2, 2, 4, 0,
+            5, 1, 0, 0, 2, 3, 3, 1,
+            5, 5, 4, 0, 1, 3, 1, 1,
+            2, 5, 4, 0, 1, 1, 3, 3,
+            2, 2, 4, 0, 5, 5, 1, 3,
+        )
+        val tray = listOf(
+            Piece(listOf(Cell(0, 0), Cell(1, 0)), 4),
+            Piece(listOf(Cell(0, 0), Cell(1, 0), Cell(1, 1)), 2),
+            Piece(listOf(Cell(0, 0), Cell(0, 1), Cell(0, 2), Cell(1, 1)), 5),
+        )
+        fun classicBoard(combo: Int) {
+            useClassic()
+            clearFx()
+            game.debugSet(board, 12480, combo, tray)
+            displayScore = 12480f
+            screen = Screen.Game
+            paint()
+            sync()
+        }
+        when (kind) {
+            "board" -> classicBoard(0)
+            "combo" -> {
+                classicBoard(3)
+                // place the domino into the gap: two rows clear on combo x4 (rainbow border, hype voice)
+                showcaseStep = 2500L to { drop(Drag(0, 0f, 0f, 0f, 0f, now), Cell(6, 3)) }
+            }
+            "reveal" -> {
+                journeyLevel = 5
+                startLevel(tap = false)
+                paint()
+                showcaseStep = 3000L to { game.debugScore(target); sync() }
+            }
+            "journey" -> { journeyLevel = 14; openJourney(tap = false); paint() }
+            "album" -> { journeyLevel = 23; openJourney(tap = false); showAlbum = true; paint() }
+            else -> { screen = Screen.Home; paint() }
+        }
+    }
+
     // ---------------- frame
     var demoText = false
     private var lastDemo = 0L
@@ -598,6 +650,10 @@ class GameUi(var game: Game, private val prefs: Prefs, private val sound: SoundF
         // and as a Float it only advanced in ~30 ms steps, which made every wave animation stutter)
         if (clockBase < 0) clockBase = t - 10_000
         now = t - clockBase
+        showcaseStep?.let { (wait, step) ->
+            if (showcaseT0 < 0) showcaseT0 = now   // the delay counts from the first real frame
+            if (now - showcaseT0 >= wait && metrics != null) { showcaseStep = null; step() }
+        }
         val sIt = scoreFlights.iterator()
         while (sIt.hasNext()) {
             val f = sIt.next()
@@ -708,11 +764,11 @@ class GameUi(var game: Game, private val prefs: Prefs, private val sound: SoundF
         hx?.tick()
     }
 
-    fun drop(d: Drag) {
+    fun drop(d: Drag, forced: Cell? = null) {
         val m = metrics ?: return
         val p = game.tray[d.slot] ?: return
         val e = eff(d)
-        val at = target(d)
+        val at = forced ?: target(d)
         val before = game.score
         val res = if (at != null) game.place(d.slot, at.r, at.c) else null
         if (res == null) {
